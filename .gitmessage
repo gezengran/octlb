@@ -1,0 +1,15 @@
+# <type>(<scope>): <subject>
+#
+# Types: feat | fix | refactor | perf | test | docs | build | ci | chore
+# Scopes: mesh | field | lbm | solver | examples | tests | doc | build | ci
+#
+# Subject rules:
+#   - imperative mood, present tense ("add" not "added")
+#   - no trailing period
+#   - <= 72 characters
+#
+# Why this change (optional):
+#
+#
+# Closes # (optional):
+#
