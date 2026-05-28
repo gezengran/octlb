@@ -1,0 +1,131 @@
+# Build directories
+build/
+Build/
+BUILD/
+build_*
+out/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+Testing/
+
+# Compiler / linker
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.out
+*.su
+*.idb
+*.pch
+*.d
+
+# IDE / editor (keep .cursor/rules/ for shared agent conventions)
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+.clangd/
+.ccls
+.ccls-cache/
+.cache/
+
+# Debug / profiling
+*.dSYM/
+*.gdb_history
+*.core
+valgrind-out.*
+*.profraw
+*.profdata
+perf.data*
+
+# Test coverage
+*.gcov
+*.gcda
+*.gcno
+coverage/
+htmlcov/
+.coverage
+coverage.info
+
+# Local dependencies / vendored trees (if added later)
+deps/
+third_party/
+external/
+vendor/
+
+# Temporary / logs
+*.tmp
+*.bak
+*.log
+*.cache
+
+# Generated documentation
+docs/html/
+docs/latex/
+docs/man/
+docs/doxygen/
+
+# Python (utility scripts, if any)
+*.py[cod]
+__pycache__/
+*.egg-info/
+dist/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+
+# Backup
+*.orig
+
+# Simulation / benchmark output (VTK, gnuplot, drag CSV, etc.)
+*.vts
+*.vtm
+*.pvd
+*.vtp
+*.vtu
+*.vtk
+*.vti
+*.dat
+*.csv
+*.gp
+*.png
+*.pdf
+tmp/
+output/
+results/
+
+# Geometry: track fixtures under tests/ and examples/, ignore ad-hoc local STLs
+*.stl
+!tests/data/**/*.stl
+!examples/**/data/**/*.stl

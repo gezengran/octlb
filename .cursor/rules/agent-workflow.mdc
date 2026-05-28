@@ -1,0 +1,56 @@
+---
+description: OctLB agent workflow — coding only, English paths/names, no layout/scripts without approval
+alwaysApply: true
+---
+
+# Agent workflow (OctLB / octlb)
+
+## Role
+
+- **Coding only**: implement, refactor, and review source under `octlb/`.
+- **Do not** run compile, test, coverage, or CI unless the user explicitly asks in the current turn.
+- After changes, tell the user **how** to build and test; they execute commands on their machine.
+
+## Scripts
+
+- Do **not** add shell/Python helper scripts, release scripts, codegen wrappers, or one-off tooling unless the user explicitly requests them in the current task.
+- Prefer changing existing build/docs over introducing new `scripts/` entries.
+
+## Directory structure
+
+- Do **not** create, move, rename, or delete directories (including `mesh/`, `solver/`, `field/`, `lbm/`, or other module roots) without **explicit user approval**.
+- Do **not** reorganize the tree “for cleanliness” without approval.
+- Prefer editing files under existing paths over adding new layout.
+
+## English names (paths and code)
+
+- **File and directory names**: English only; use **common abbreviations**, not literal translations of Chinese (e.g. `doc/prd/`, `doc/tasks/`, `doc/dev/` — not `requirements/`, `development/`, or Chinese segments).
+- **Doc / ADR files**: lowercase with hyphens (`verify-cylinder3d.md`, `0001-ghost-face-exchange.md`).
+- **C++ tree**: `snake_case` aligned with the planned layout (`load_balance/`, `ghost_schedule.h`).
+- **Code and runtime text** (English): comments, Doxygen, logs, errors, CLI help, output paths, VTK field names, plot legends, Gnuplot labels.
+- **Markdown prose** under `doc/` may be Chinese; **paths and identifiers used from code must be English**.
+- Do **not** emit Chinese runtime strings unless the user explicitly requests localization.
+
+## Uncertainty and decisions
+
+- For ambiguous requirements, API shape, cross-module refactors, or trade-offs not fixed in docs: **stop and ask**; implement only after the user decides.
+- Treat `doc/prd/octlb-framework.md` as the requirements baseline unless the user overrides it.
+
+## Build instructions (for the user, not the agent)
+
+When documenting build steps, assume:
+
+```bash
+module load octlb   # MPI, p4est, CGAL, Boost, GMP, MPFR (no HDF5/Eigen)
+```
+
+Use at most **4** parallel compile jobs (`-j4`, `cmake --build … -j4`) unless the user requests more.
+
+## Quick reference
+
+| Situation | Agent action |
+|-----------|----------------|
+| Task complete | Provide exact configure/build/test commands; user runs them |
+| Needs a new script under `scripts/` | Ask first |
+| Needs a new module directory | Ask first |
+| Two valid designs | Present options; wait for user choice |
