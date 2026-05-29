@@ -67,7 +67,9 @@ OctLB/
 │   ├── mesh/             ← Mesh 模块（不 include OpenLB，不含物理量）
 │   │   ├── forest/       # OctreeForest：p4est refine/balance/partition 封装
 │   │   ├── topology/     # BlockRegistry, FacePairList
-│   │   ├── geometry/     # STL 体素化, GeometryEngine, MaterialField 产生
+│   │   ├── geometry/     # GeometryEngine（CGAL 体素化）、MaterialField 产生
+│   │   ├── io/           # Mesh 模块内共用 IO（不依赖 OpenLB）
+│   │   │   └── stl_reader/   # 移植自 OpenLB，唯一消费方是 GeometryEngine
 │   │   └── load_balance/ # WeightedLoadBalancer
 │   │
 │   └── solver/
@@ -77,6 +79,10 @@ OctLB/
 │       │   ├── face_iterator.h
 │       │   └── ghost_schedule.h
 │       │
+│       ├── io/           ← Solver 模块内共用 IO（不依赖 LBM 头文件）
+│       │   ├── vtk_writer/   # 移植 blockVtkWriter3D，替换驱动层
+│       │   └── gnuplot/      # 直接复制自 OpenLB
+│       │
 │       └── lbm/          ← LBM 专属（从 OpenLB 复制并适配）
 │           ├── core/         # ConcreteBlockLattice, Cell, stages
 │           ├── descriptor/   # D3Q19 等格子描述符
@@ -84,11 +90,7 @@ OctLB/
 │           ├── boundary/     # Bouzidi 曲面 BC, 其他 BC
 │           ├── refinement/   # Lagrava 算子（移植自 OpenLB src/refinement/）
 │           ├── time_loop/    # 递归下降 TimeLoop
-│           ├── unit_converter/
-│           └── io/
-│               ├── stl_reader/   # 直接复制自 OpenLB
-│               ├── vtk_writer/   # 移植 blockVtkWriter3D，替换驱动层
-│               └── gnuplot/      # 直接复制自 OpenLB
+│           └── unit_converter/
 │
 ├── examples/
 │   ├── cavity3d/         # 初期验证：无 STL，无 AMR，Lid-driven cavity
@@ -218,14 +220,18 @@ advance(level l):
 
 ### OpenLB 代码融入策略
 
-- 从 OpenLB `src/` 按需复制以下子目录到 `src/solver/lbm/`：
-  - `core/`（BlockLattice、Cell、stages、platform）
-  - `descriptor/`（D3Q19、字段元描述）
-  - `dynamics/`（BGK、MRT、Smagorinsky 等）
-  - `boundary/`（Bouzidi、速度/压力 BC）
-  - `refinement/`（Lagrava/Rohde 算子，作为移植基础）
-  - `io/`（stlReader、gnuplotWriter；blockVtkWriter3D 修改驱动层）
-  - `utilities/`（unitConverter 等）
+- 从 OpenLB `src/` 按需复制并适配到以下位置：
+  - `src/solver/lbm/core/`（BlockLattice、Cell、stages、platform）
+  - `src/solver/lbm/descriptor/`（D3Q19、字段元描述）
+  - `src/solver/lbm/dynamics/`（BGK、MRT、Smagorinsky 等）
+  - `src/solver/lbm/boundary/`（Bouzidi、速度/压力 BC）
+  - `src/solver/lbm/refinement/`（Lagrava/Rohde 算子，作为移植基础）
+  - `src/solver/lbm/unit_converter/`（unitConverter 等）
+  - `src/mesh/io/stl_reader/`（stlReader；不依赖 OpenLB 其他模块，唯一消费方是 GeometryEngine）
+  - `src/solver/io/vtk_writer/`（blockVtkWriter3D；替换驱动层，不依赖 LBM 头文件）
+  - `src/solver/io/gnuplot/`（gnuplotWriter；直接复制）
+
+**IO 模块归属原则**：STL 读入是几何输入，属 Mesh 模块关切；VTK/gnuplot 是仿真输出，属 Solver 模块关切。两者均不依赖对方模块头文件，模块内共用，不在 lbm/ 子目录内重复放置。
 - 不保留 OpenLB 的 build system（Makefile/config.mk）
 - 版本基准：OpenLB 1.9.0
 - 后续 OpenLB 升级：手动 diff 相关子目录，按需合并
@@ -236,20 +242,31 @@ advance(level l):
 
 **好测试的定义**：只测对外行为（接口契约），不测实现细节（内部数据结构、MPI tag 值等）。
 
-**测试顺序（tracer bullet，各层独立可测）**：
+**开发策略：严格 TDD**——测试顺序即开发顺序，每个组件先写测试（红），再实现（绿），再重构。每条测试只因一个原因失败。
+
+**单元测试 Fixture 原则**：凡依赖文件 I/O 的组件（如 GeometryEngine、VTK Writer），单元测试一律使用硬编码 fixture 数据（triangle soup、BlockCollection），不依赖真实文件。真实文件路径仅在集成测试中出现。
+
+**测试顺序（= 开发顺序，各层独立可测）**：
 
 | 顺序 | 测试名 | 验证内容 | 层级 |
 |---|---|---|---|
-| 1 | `test_face_pair_list` | p8est_iterate face callback 能否正确识别同级面和粗细 hanging 面 | Mesh |
-| 2 | `test_load_balancer` | 2^level 权重分区后各 rank 总权重差异 < 5% | Mesh |
-| 3 | `test_ghost_topology` | ghost octant 列表与 FacePairList 一致（每条面对两端都认识对方） | Mesh |
-| 4 | `test_collision_bgk` | 单块 BGK 碰撞：质量守恒、动量守恒，收敛至 Maxwell 平衡态 | Solver/lbm |
-| 5 | `test_ghost_schedule` | 2-rank，交换面层后两块 overlap 值一致（MPI 正确性） | Solver/field |
-| 6 | `test_lagrava_coupler` | 2-block（1 粗 1 细），经 N 步后粗细界面处密度/速度连续，无虚假反射 | Solver/lbm |
-| 7 | `test_time_loop_levels` | L=3 递归时间步，各层步数计数符合 1:2:4 关系 | Solver/lbm |
-| 8 | `test_cavity3d_serial` | 单 rank，cavity3d，Re=100，中线速度剖面与 Ghia 1982 参考值误差 < 2% | Integration |
-| 9 | `test_cylinder3d_parallel` | 多 rank（≥4），cylinder3d L=4，阻力系数 Cd 与 OpenLB 参考值误差 < 1% | Integration |
-| 10 | `test_amr_convergence` | L=1→3 逐级细化，速度场 L2 误差收敛阶 ≈ 2 | Integration |
+| 0 | `test_octree_forest` | OctreeForest refine/balance/partition 在单位立方体上的基本正确性；验证 `local_octants()`、`quadrant_bounds()`、`quadrant_level()` | Mesh/forest |
+| 1 | `test_stl_reader` | ASCII/binary STL 解析：三角面片数、法向量方向、包围盒正确性 | Mesh/io |
+| 2 | `test_geometry_engine` | 硬编码 triangle soup（立方体）输入，CGAL 体素化产出正确 fluid/solid/boundary 标签；不依赖文件 I/O | Mesh/geometry |
+| 3 | `test_face_pair_list` | p8est_iterate face callback 正确识别同级面和粗细 hanging 面 | Mesh/topology |
+| 4 | `test_load_balancer` | 2^level 权重分区后各 rank 总权重差异 < 5% | Mesh |
+| 5 | `test_ghost_topology` | ghost octant 列表与 FacePairList 一致（每条面对两端都认识对方） | Mesh |
+| 6 | `test_block_collection` | `BlockCollection<T>` 增删查，以 `octant_id` 为键；`BlockIterator` 遍历正确 | Solver/field |
+| 7 | `test_collision_bgk` | 单块 BGK 碰撞：质量守恒、动量守恒，收敛至 Maxwell 平衡态 | Solver/lbm |
+| 8 | `test_ghost_schedule` | 2-rank，交换面层后两块 overlap 值一致（MPI 正确性） | Solver/field |
+| 9 | `test_lagrava_coupler` | 2-block（1 粗 1 细），经 N 步后粗细界面处密度/速度连续，无虚假反射 | Solver/lbm |
+| 10 | `test_time_loop_levels` | L=3 递归时间步，各层步数计数符合 1:2:4 关系 | Solver/lbm |
+| 11 | `test_vtk_writer` | 硬编码 `BlockCollection` 输入，输出合法 VTK XML，空间范围与 `quadrant_bounds` 吻合 | Solver/io |
+| 12 | `test_cavity3d_serial` | 单 rank，cavity3d，Re=100，中线速度剖面与 Ghia 1982 参考值误差 < 2% | Integration |
+| 13 | `test_cylinder3d_parallel` | 多 rank（≥4），cylinder3d L=4，阻力系数 Cd 与 OpenLB 参考值误差 < 1% | Integration |
+| 14 | `test_amr_convergence` | L=1→3 逐级细化，速度场 L2 误差收敛阶 ≈ 2 | Integration |
+
+**依赖链**：0 → 3 → 5 → 8 → 9 → 10；1 → 2；6 → 8；7 → 9；0–11 全绿后进入 Integration。
 
 **测试基础设施**：GTest + MPI（参考 octree-mesh 现有 `tests/` 结构）。
 
@@ -291,3 +308,53 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 - 重分区迁移：`p8est_transfer_fixed`（动态 AMR 阶段启用）
 
 不应自行实现等价的 MPI 通信逻辑（octree-mesh 中 tag 7001/7002 的教训）。
+
+---
+
+## 需求完成情况
+
+> 状态说明：`未开始` / `开发中` / `测试绿` / `完成`
+
+### Mesh 模块
+
+| 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
+|---|---|---|---|---|
+| OctreeForest | `mesh/forest/` | 未开始 | `test_octree_forest` | 参考 octree-mesh 重写 |
+| stl_reader | `mesh/io/stl_reader/` | 未开始 | `test_stl_reader` | 移植自 OpenLB |
+| GeometryEngine + MaterialField | `mesh/geometry/` | 未开始 | `test_geometry_engine` | CGAL 体素化；参考 GeometryAdaptiveEngine |
+| FacePairList | `mesh/topology/` | 未开始 | `test_face_pair_list` | 基于 `p8est_iterate` face callback |
+| WeightedLoadBalancer | `mesh/load_balance/` | 未开始 | `test_load_balancer` | 权重 2^level |
+| Ghost 拓扑一致性 | `mesh/topology/` | 未开始 | `test_ghost_topology` | 验证两端互认 |
+
+### Solver/field 模块
+
+| 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
+|---|---|---|---|---|
+| BlockCollection\<T\> + BlockIterator | `solver/field/` | 未开始 | `test_block_collection` | 泛型，不依赖 LBM 头文件 |
+| GhostSchedule\<T\> + HaloExchange | `solver/field/` | 未开始 | `test_ghost_schedule` | 面层 MPI，替代 tag 7001/7002 |
+
+### Solver/lbm 模块
+
+| 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
+|---|---|---|---|---|
+| ConcreteBlockLattice + BGK | `solver/lbm/core/` + `dynamics/` | 未开始 | `test_collision_bgk` | 移植自 OpenLB |
+| MRT / Smagorinsky Dynamics | `solver/lbm/dynamics/` | 未开始 | — | 移植自 OpenLB，集成测试间接覆盖 |
+| Bouzidi BC | `solver/lbm/boundary/` | 未开始 | — | 移植自 OpenLB |
+| LevelCoupler（Lagrava） | `solver/lbm/refinement/` | 未开始 | `test_lagrava_coupler` | 移植自 OpenLB src/refinement/ |
+| TimeLoop（递归下降） | `solver/lbm/time_loop/` | 未开始 | `test_time_loop_levels` | |
+| unit_converter | `solver/lbm/unit_converter/` | 未开始 | — | 移植自 OpenLB，LBM 专属 |
+
+### Solver/io 模块
+
+| 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
+|---|---|---|---|---|
+| vtk_writer | `solver/io/vtk_writer/` | 未开始 | `test_vtk_writer` | 移植 blockVtkWriter3D，替换驱动层 |
+| gnuplot | `solver/io/gnuplot/` | 未开始 | — | 直接复制自 OpenLB |
+
+### 集成测试
+
+| 测试 | 状态 | 前置条件 | 验收标准 |
+|---|---|---|---|
+| `test_cavity3d_serial` | 未开始 | 测试 0–11 全绿 | Re=100 中线速度剖面与 Ghia 1982 误差 < 2% |
+| `test_cylinder3d_parallel` | 未开始 | `test_cavity3d_serial` 通过 | ≥4 rank，Cd 与 OpenLB 参考值误差 < 1% |
+| `test_amr_convergence` | 未开始 | `test_cylinder3d_parallel` 通过 | L=1→3 速度场 L2 误差收敛阶 ≈ 2 |
