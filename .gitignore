@@ -18,6 +18,7 @@ cmake_install.cmake
 Makefile
 *.cmake
 !CMakeLists.txt
+!cmake/**.cmake
 install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake

@@ -1,7 +1,6 @@
 # OctLB 框架 PRD
 
 > 版本：v0.1  
-> 状态：草稿  
 > 日期：2026-05-28
 
 ---
@@ -62,8 +61,12 @@ OctLB 采用**两模块架构**：
 
 ```
 OctLB/
+├── cmake/                # Find 模块：FindP4est.cmake 等
 ├── doc/                  # README; prd/, tasks/, dev/
 ├── src/
+│   ├── common/           # 全项目共用基础类型（不依赖 p4est / MPI / OpenLB）
+│   │   ├── types.h           # label, scalar, OctantId（OpenFOAM 风格）
+│   │   └── bounding_box.h    # BoundingBox struct
 │   ├── mesh/             ← Mesh 模块（不 include OpenLB，不含物理量）
 │   │   ├── forest/       # OctreeForest：p4est refine/balance/partition 封装
 │   │   ├── topology/     # BlockRegistry, FacePairList
@@ -106,13 +109,41 @@ OctLB/
 
 ---
 
+### 基础类型（src/common/）
+
+全项目共用的基础类型，不依赖任何第三方库头文件：
+
+```cpp
+// types.h
+namespace octlb {
+using label    = int32_t;   // 整数索引，对应 OpenFOAM label
+using scalar   = double;    // 浮点数，对应 OpenFOAM scalar
+using OctantId = label;     // 本地 quadrant 线性序号（0…local_num_quadrants-1）
+}
+
+// bounding_box.h
+namespace octlb {
+struct BoundingBox {
+  scalar x_min, y_min, z_min;
+  scalar x_max, y_max, z_max;
+};
+}
+```
+
+`OctantId` 是 p4est 本地 quadrant 的连续线性序号，与 `sc_array_t` 下标直接对应，`BlockCollection<T>` 可用 `std::vector<T>` 按下标 O(1) 访问。
+
+---
+
 ### 模块一：Mesh 模块
 
 #### OctreeForest
 
-- 封装 p4est 的 `p8est_t` forest，提供 refine / coarsen / balance / partition 操作。
-- 对外暴露接口：`local_octants()`, `ghost_octants()`, `quadrant_bounds(octant_id)`, `quadrant_level(octant_id)`。
-- 不暴露 p4est 内部类型给 Solver 模块。
+- 封装 p4est 的 `p8est_t` forest，提供 refine / balance / partition 操作。
+- 构造函数：`OctreeForest(MPI_Comm comm, BoundingBox domain)`；内部固定使用 `p8est_connectivity_new_unitcube()`，物理坐标由 `domain` 缩放。
+- `refine()` 签名：`void refine(std::function<bool(OctantId)> criterion, int max_level)`；内部通过 `user_pointer` 桥接 p4est C 回调。
+- 对外暴露接口：`local_num_octants()`, `quadrant_bounds(OctantId)`, `quadrant_level(OctantId)`。
+- `quadrant_bounds()` 返回 `BoundingBox`，将 p4est 整数坐标按 `domain` 缩放为物理坐标。
+- 不暴露任何 `p8est_*` 类型给 Solver 模块。
 
 #### FacePairList
 
@@ -268,7 +299,10 @@ advance(level l):
 
 **依赖链**：0 → 3 → 5 → 8 → 9 → 10；1 → 2；6 → 8；7 → 9；0–11 全绿后进入 Integration。
 
-**测试基础设施**：GTest + MPI（参考 octree-mesh 现有 `tests/` 结构）。
+**测试基础设施**：GTest + MPI。
+- `tests/mpi_main.cpp`：手写 `MPI_Init → RUN_ALL_TESTS → MPI_Finalize`，所有 MPI 测试 target 链接此 main 而非 `GTest::gtest_main`。
+- CMake 用 `${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4 --oversubscribe` 启动测试，跨平台（本地 `mpirun`、服务器 `srun` 均适用）。
+- p4est 集成：`cmake/FindP4est.cmake` 暴露 `P4est::p4est` imported target（INTERFACE 依赖 `MPI::MPI_C`）；跨机器用 `-DP4EST_ROOT=...` 指定安装路径。
 
 ---
 
