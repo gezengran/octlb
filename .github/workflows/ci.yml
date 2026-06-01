@@ -1,0 +1,99 @@
+# Build and run OctLB unit tests (MPI + p4est).
+# p4est is built from the official v2.8.5 release asset (GitHub tarball is complete;
+# auto-generated "Source code" archives are missing sc/ and configure).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ci.yml"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "src/**"
+      - "tests/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/ci.yml"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "src/**"
+      - "tests/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    env:
+      P4EST_RELEASE: v2.8.5
+      P4EST_TARBALL: p4est-2.8.5.5-9ddbb.tar.gz
+      P4EST_SRCDIR: p4est-2.8.5.5-9ddbb
+      P4EST_ROOT: ${{ github.workspace }}/.local/p4est
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            autoconf \
+            automake \
+            libtool \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libopenmpi-dev \
+            openmpi-bin \
+            libgtest-dev \
+            wget
+
+      - name: Cache p4est install prefix
+        uses: actions/cache@v5
+        id: p4est-cache
+        with:
+          path: .local/p4est
+          key: p4est-${{ env.P4EST_RELEASE }}-openmpi-ubuntu-22.04
+
+      - name: Build and install p4est
+        if: steps.p4est-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          wget -q "https://github.com/cburstedde/p4est/releases/download/${P4EST_RELEASE}/${P4EST_TARBALL}"
+          tar xf "${P4EST_TARBALL}"
+          cd "${P4EST_SRCDIR}"
+          ./configure \
+            --prefix="${P4EST_ROOT}" \
+            --enable-mpi \
+            --disable-vtk
+          make -j4
+          make install
+
+      - name: Configure CMake
+        run: |
+          set -euxo pipefail
+          GTEST_CONFIG="$(find /usr -name 'GTestConfig.cmake' 2>/dev/null | head -1)"
+          GTEST_ARGS=()
+          if [ -n "${GTEST_CONFIG}" ]; then
+            GTEST_ARGS=(-DGTest_DIR="$(dirname "${GTEST_CONFIG}")")
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DP4EST_ROOT="${P4EST_ROOT}" \
+            "${GTEST_ARGS[@]}"
+
+      - name: Build
+        run: cmake --build build -j4
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
