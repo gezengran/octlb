@@ -189,12 +189,19 @@ struct BoundingBox {
 #### field/ 子层（泛型，不依赖 LBM）
 
 - **`BlockCollection<T>`**：管理本 rank 持有的所有块，每块存一个 `T` 类型对象，以 `octant_id` 为键。
+  - 内部使用 `std::vector<T>`，按 OctantId 下标 O(1) 访问。
+  - 构造签名：`BlockCollection(label num_octants, std::function<T(OctantId)> factory)`；
+    工厂函数在构造时逐 id 调用，不要求 T 默认可构造（兼容 `ConcreteBlockLattice` 等需要参数的类型）。
+  - CMake target：`octlb_field` INTERFACE 库（全为头文件模板），不依赖 `octlb_mesh`、P4est、MPI。
 - **`GhostSchedule<T>`**：从 `FacePairList::SameLevelFaces` 构建 MPI 通信计划。
   - 交换单位：N×N 面层（`N²×q` 个值），而非整块（N³×q）。
   - 与 N=8 相比，通信量是整块交换的 1/8；N=10 时为 1/10。
   - 提供 `pack_face(block, face_dir, buffer)` / `unpack_face(buffer, block, face_dir)` 回调接口，对数据格式无假设。
-- **`BlockIterator`**：遍历本 rank 所有 `octant_id`。
+- **`BlockIterator`**：遍历本 rank 所有 `octant_id`（产出 OctantId 整数值，不是 T 引用）。
+  - Level 过滤**不在** BlockIterator 内实现；TimeLoop 初始化时从 OctreeForest 缓存
+    `level → [OctantId]` 映射，按层驱动 collide_and_stream。
 - **`FaceIterator`**：遍历 `FacePairList` 中的面对，提供 `(coarse_block, fine_blocks[4], normal)` 视图。
+  - 包装 `FacePairList::CoarseFineFaces`，归属 T05（GhostSchedule 任务），有 Mesh 依赖。
 
 #### lbm/ 子层（LBM 专属）
 
@@ -240,6 +247,9 @@ advance(level l):
 - 递归深度 = 细化层数（6-8，最大 10），不会溢出栈。
 - 每层的 `collide_and_stream` 是 OpenLB `BlockLattice::collideAndStream()` 的并行循环。
 - 第一版：静态分层，`advance(level 0)` 为入口，层级结构在初始化时确定。
+- **Level-to-OctantId 映射**：TimeLoop 在初始化时调用 `OctreeForest::quadrant_level(id)`
+  遍历所有本地 octant，将 `level → [OctantId]` 映射缓存为 `std::vector<std::vector<OctantId>>`，
+  之后每步直接按层索引，不再查询 OctreeForest。BlockCollection 和 BlockIterator 本身对 level 无感知。
 
 **VTK Writer（IO）**
 
@@ -374,7 +384,7 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 
 | 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
 |---|---|---|---|---|
-| BlockCollection\<T\> + BlockIterator | `solver/field/` | 未开始 | `test_block_collection` | 泛型，不依赖 LBM 头文件 |
+| BlockCollection\<T\> + BlockIterator | `solver/field/` | 测试绿 | `test_block_collection` | 泛型，不依赖 LBM 头文件 |
 | GhostSchedule\<T\> + HaloExchange | `solver/field/` | 未开始 | `test_ghost_schedule` | 面层 MPI，替代 tag 7001/7002 |
 
 ### Solver/lbm 模块
