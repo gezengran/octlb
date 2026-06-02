@@ -86,14 +86,18 @@ OctLB/
 │       │   ├── vtk_writer/   # 移植 blockVtkWriter3D，替换驱动层
 │       │   └── gnuplot/      # 直接复制自 OpenLB
 │       │
-│       └── lbm/          ← LBM 专属（从 OpenLB 复制并适配）
-│           ├── core/         # ConcreteBlockLattice, Cell, stages
-│           ├── descriptor/   # D3Q19 等格子描述符
-│           ├── dynamics/     # BGK, MRT, Smagorinsky 等
-│           ├── boundary/     # Bouzidi 曲面 BC, 其他 BC
-│           ├── refinement/   # Lagrava 算子（移植自 OpenLB src/refinement/）
-│           ├── time_loop/    # 递归下降 TimeLoop
-│           └── unit_converter/
+│       └── lbm/          ← LBM 专属；算法复用策略（见"OpenLB 代码融入策略"）
+│           │             # ── OctLB 自建区（namespace octlb）──
+│           ├── block_lattice.h/.cpp  # octlb::BlockLattice<T,D>，octant 感知格子数据结构
+│           ├── time_loop/    # 递归下降 TimeLoop（T06）
+│           ├── unit_converter/# LBM 单位换算（T06）
+│           │             # ── OpenLB 算法头文件（只读，namespace olb，无 .cpp）──
+│           ├── descriptor/   # D3Q19 等格子常数（c/t/invCs2），~10 个头文件
+│           ├── dynamics/     # BGK/MRT/Smagorinsky kernel、平衡态、矩计算，~12 个头文件
+│           ├── core/         # MinimalCell concept、FieldD、Vector，~5 个头文件
+│           ├── utilities/    # 数学工具（vectorHelpers 等），~5 个头文件
+│           ├── boundary/     # Bouzidi/bounce-back 算法头文件（T07 启用）
+│           └── refinement/   # Lagrava 算子头文件（T06 启用）
 │
 ├── examples/
 │   ├── cavity3d/         # 初期验证：无 STL，无 AMR，Lid-driven cavity
@@ -181,8 +185,8 @@ struct BoundingBox {
 #### 核心索引约定
 
 所有组件使用统一的格子地址 `(octant_id, i, j, k)`，无需翻译表：
-- `octant_id` → `BlockStore` 中的 `ConcreteBlockLattice`
-- `(i, j, k)` → 块内坐标，直接映射到 OpenLB `BlockLattice::cell(i, j, k)`
+- `octant_id` → `BlockCollection` 中的 `octlb::BlockLattice`
+- `(i, j, k)` → 块内坐标，直接映射到 `BlockLattice::get(i, j, k)`
 
 这是与 octree-mesh 中 `mb_to_mesh_` / `mesh_to_mb_` 翻译表的根本性改进。
 
@@ -207,9 +211,13 @@ struct BoundingBox {
 
 **BlockStore（LBM 具体化）**
 
-- 每个 octant 持有一个 `ConcreteBlockLattice<T, D3Q19Descriptor, Platform::CPU_SISD>`（或 GPU 变体）。
-- 块尺寸：`(N+2*overlap)³`，overlap = 1（D3Q19 streaming 只需 1 格 overlap）。
-- 初始化时读取 `MaterialField`，为每格设置对应 `Dynamics`（fluid → BGK/MRT，solid → BounceBack，boundary → Bouzidi）。
+- 每个 octant 持有一个 `octlb::BlockLattice<T, D3Q19Descriptor>`——OctLB 自建的格子数据结构。
+- 内存布局：`[Nx+2h][Ny+2h][Nz+2h][Q]` 平坦数组，`h=1` ghost halo，Q 在最内层。
+- 块尺寸：`(N+2)³×Q`，halo 宽度 = 1（D3Q19 streaming 只需 1 格 overlap）。
+- `BlockLattice::collide(omega)` 内部遍历所有非 ghost 格，调用 `olb::collision::BGK::type::apply(cell, params)`——OpenLB 的纯函数模板，只依赖 `concepts::MinimalCell`。
+- `BlockLattice::stream()` 使用 pull-scheme，读取已由 `GhostSchedule` 刷新的 ghost 层。
+- 初始化时按 `MaterialField` 设置每格 omega（fluid）或标记为 solid/boundary（T07 实现 Bouzidi）。
+- `BlockCollection<BlockLattice>` 从 T03 泛型工厂直接复用，无需修改。
 
 **HaloExchange**
 
@@ -235,7 +243,7 @@ struct BoundingBox {
 
 ```
 advance(level l):
-  collide_and_stream(all blocks at level l)  // OpenLB ConcreteBlockLattice::collideAndStream()
+  collide_and_stream(all blocks at level l)  // octlb::BlockLattice::collide() + stream()
   halo_exchange(level l)                      // GhostSchedule，面层 MPI
   coupler.apply_half_time(l → l+1)            // LevelCoupler prolongation half-time
   advance(level l+1)                          // 第一个细子步（递归）
@@ -245,7 +253,7 @@ advance(level l):
 ```
 
 - 递归深度 = 细化层数（6-8，最大 10），不会溢出栈。
-- 每层的 `collide_and_stream` 是 OpenLB `BlockLattice::collideAndStream()` 的并行循环。
+- 每层的 `collide_and_stream` 是 `octlb::BlockLattice::collide() + stream()` 的并行循环。
 - 第一版：静态分层，`advance(level 0)` 为入口，层级结构在初始化时确定。
 - **Level-to-OctantId 映射**：TimeLoop 在初始化时调用 `OctreeForest::quadrant_level(id)`
   遍历所有本地 octant，将 `level → [OctantId]` 映射缓存为 `std::vector<std::vector<OctantId>>`，
@@ -271,21 +279,58 @@ advance(level l):
 
 ### OpenLB 代码融入策略
 
-- 从 OpenLB `src/` 按需复制并适配到以下位置：
-  - `src/solver/lbm/core/`（BlockLattice、Cell、stages、platform）
-  - `src/solver/lbm/descriptor/`（D3Q19、字段元描述）
-  - `src/solver/lbm/dynamics/`（BGK、MRT、Smagorinsky 等）
-  - `src/solver/lbm/boundary/`（Bouzidi、速度/压力 BC）
-  - `src/solver/lbm/refinement/`（Lagrava/Rohde 算子，作为移植基础）
-  - `src/solver/lbm/unit_converter/`（unitConverter 等）
-  - `src/mesh/io/stl_reader/`（stlReader；不依赖 OpenLB 其他模块，唯一消费方是 GeometryEngine）
-  - `src/solver/io/vtk_writer/`（blockVtkWriter3D；替换驱动层，不依赖 LBM 头文件）
-  - `src/solver/io/gnuplot/`（gnuplotWriter；直接复制）
+**融合方式：算法复用（Algorithm Reuse）**
 
-**IO 模块归属原则**：STL 读入是几何输入，属 Mesh 模块关切；VTK/gnuplot 是仿真输出，属 Solver 模块关切。两者均不依赖对方模块头文件，模块内共用，不在 lbm/ 子目录内重复放置。
-- 不保留 OpenLB 的 build system（Makefile/config.mk）
-- 版本基准：OpenLB 1.9.0
-- 后续 OpenLB 升级：手动 diff 相关子目录，按需合并
+OctLB 自建数据结构（`octlb::BlockLattice`），仅从 OpenLB 借用**无状态函数模板**（碰撞算子、
+平衡态公式、矩计算），不引入 OpenLB 的格子管理框架（`ConcreteBlockLattice`、
+`DynamicsPromise`、`SuperLattice`）。
+
+**设计原因**
+
+OpenLB 1.9.0 的 `ConcreteBlockLattice` 经 `blockLattice.h → analyticalF.h →
+superGeometry.h` 的传递包含链拖入整个应用框架层；`DynamicsPromise` 在构造函数体内的
+局部 lambda 类型强制要求所有模板实例化在同一翻译单元（GCC "local type, used but never
+defined" 规则），唯一解是引用 `olb3D.h + olb3D.hh` umbrella，导致约 1477 个文件、16 MB
+代码进入仓库。这与"按需融合"原则冲突。
+
+**实际解**：OpenLB 的 BGK/MRT 碰撞 kernel 只依赖 `concepts::MinimalCell`——
+即 `cell[iPop]` 操作符。OctLB 实现满足该 concept 的 `CellProxy`，直接调用
+`olb::collision::BGK::type::apply(cell, params)`，彻底绕开框架层。
+
+**只复制算法头文件**（约 25 个，无 `.cpp`，无框架层）：
+
+| 目录 | 来源 | 内容 | 文件数 |
+|---|---|---|---|
+| `lbm/descriptor/` | OpenLB | D3Q19/D2Q9 等格子常数（c/t/invCs2），纯编译期 | ~10 |
+| `lbm/dynamics/` | OpenLB | BGK/MRT/Smagorinsky kernel、平衡态、矩计算 | ~12 |
+| `lbm/core/` | OpenLB | MinimalCell concept、FieldD、Vector 类型 | ~5 |
+| `lbm/utilities/` | OpenLB | 数学工具（vectorHelpers、normSqr 等） | ~5 |
+| `lbm/boundary/` | OpenLB | Bouzidi/bounce-back 算法头（T07 启用） | ~3 |
+| `lbm/refinement/` | OpenLB | Lagrava 算子头（T06 启用） | ~5 |
+
+**不复制**：`blockLattice.h`、`superLattice.h`、`case/`、`optimization/`、`particles/`、
+`reaction/`、`uq/`、`functors/analytical/`、`geometry/superGeometry.h`、`communication/`（MPI
+单例由 OctLB 自己管理或由 p4est 初始化）、`io/`（无 tinyxml2 依赖）。
+
+**CMake target**（极简）：
+
+```cmake
+add_library(octlb_lbm STATIC
+    block_lattice.cpp          # OctLB 自建格子，唯一 .cpp
+)
+target_include_directories(octlb_lbm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(octlb_lbm PUBLIC cxx_std_20)
+target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
+# 不需要 PLATFORM_CPU_SISD / OLB_VERSION / tinyxml2
+```
+
+**关键约定**：
+
+- **Namespace**：OpenLB 算法头文件保留 `namespace olb`；OctLB 自写代码使用 `namespace octlb`。
+- **不修改 OpenLB 头文件**：只复制，不改写，保持与上游的 diff 可追踪性。
+- **版本基准**：OpenLB 1.9.0 的算法头；后续升级只需 diff 对应的 ~25 个头文件。
+- **GPU**：不定义 `PLATFORM_GPU_CUDA` / `PLATFORM_GPU_HIP`，预留 DESCRIPTOR 模板参数。
+- **IO 模块归属**：`solver/io/vtk_writer/` 和 `solver/io/gnuplot/` 不依赖 LBM 头文件（T07 实现）。
 
 ---
 
@@ -347,7 +392,7 @@ OctLB 是对 octree-mesh 的**重新设计**，不是直接扩展。以下 octre
 |---|---|---|
 | `OctreeMesh` + p4est 封装 | `OctreeForest` | 参考重写，正确使用 `p8est_iterate` face callback |
 | `GeometryAdaptiveEngine` + CGAL | `GeometryEngine` | 参考复用 CGAL 体素化逻辑 |
-| `MBArray` / `BlockField` | `BlockCollection<T>` + OpenLB `BlockLattice` | 废弃，换 OpenLB 存储 |
+| `MBArray` / `BlockField` | `BlockCollection<octlb::BlockLattice>` | 废弃，换 OctLB 自建格子存储 |
 | `LbmSolver::ExchangeGhostFDistributions` | `GhostSchedule<f_distribution>` | 废弃，重写为面层 MPI |
 | `AMRInterpolator` | `LevelCoupler`（Lagrava） | 废弃，换守恒插值 |
 | `MigrationEngine` | 第一版不实现 | 预留接口 |
@@ -391,10 +436,10 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 
 | 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
 |---|---|---|---|---|
-| ConcreteBlockLattice + BGK | `solver/lbm/core/` + `dynamics/` | 未开始 | `test_collision_bgk` | 移植自 OpenLB |
-| MRT / Smagorinsky Dynamics | `solver/lbm/dynamics/` | 未开始 | — | 移植自 OpenLB，集成测试间接覆盖 |
-| Bouzidi BC | `solver/lbm/boundary/` | 未开始 | — | 移植自 OpenLB |
-| LevelCoupler（Lagrava） | `solver/lbm/refinement/` | 未开始 | `test_lagrava_coupler` | 移植自 OpenLB src/refinement/ |
+| `octlb::BlockLattice` + BGK | `solver/lbm/block_lattice.*` | 测试绿 | `test_collision_bgk` | T04 已落地并通过本地 ctest 验证 |
+| MRT / Smagorinsky Dynamics | `solver/lbm/dynamics/` | 未开始 | — | 复用 OpenLB 算法头文件，集成测试间接覆盖 |
+| Bouzidi BC | `solver/lbm/boundary/` | 未开始 | — | 复用 OpenLB boundary/ 算法头文件（T07） |
+| LevelCoupler（Lagrava） | `solver/lbm/refinement/` | 未开始 | `test_lagrava_coupler` | 复用 OpenLB refinement/ 算法头文件（T06） |
 | TimeLoop（递归下降） | `solver/lbm/time_loop/` | 未开始 | `test_time_loop_levels` | |
 | unit_converter | `solver/lbm/unit_converter/` | 未开始 | — | 移植自 OpenLB，LBM 专属 |
 
