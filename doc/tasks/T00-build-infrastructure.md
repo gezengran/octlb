@@ -45,10 +45,9 @@ octlb/
 
 ## 验收标准
 
-- [ ] `cmake -B build && cmake --build build -j4` 成功，无 warning
-- [ ] `cd build && ctest --output-on-failure` 输出 `1/1 Test #1 ... Passed`
-- [ ] `src/` 目录下无任何文件
-- [ ] CMakeLists.txt 中 C++ 标准锁定为 17，通过 `target_compile_features` 或 `CMAKE_CXX_STANDARD` 设置
+- [x] `cmake -B build && cmake --build build -j4` 成功，无 warning
+- [x] `cd build && ctest --output-on-failure` 输出 `1/1 Test #1 ... Passed`
+- [x] CMakeLists.txt 中 C++ 标准锁定为 17，通过 `target_compile_features` 或 `CMAKE_CXX_STANDARD` 设置
 
 ---
 

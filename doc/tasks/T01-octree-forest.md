@@ -108,15 +108,15 @@ class OctreeForest {
 
 ## 验收标准
 
-- [ ] `cmake -B build -DP4EST_ROOT=<path> && cmake --build build -j4` 编译通过，无 warning
-- [ ] `ctest --output-on-failure` 中 `test_octree_forest` 通过（4 rank，`--oversubscribe`）
-- [ ] 单位立方体均匀细化 2 层后，所有 rank 的 `local_num_octants()` 之和 = 64
-- [ ] `quadrant_bounds()` 对所有 octant 返回不重叠、拼合覆盖整个 domain 的包围盒
-- [ ] `quadrant_level()` 在 level-2 均匀细化后返回 2
-- [ ] `balance()` 后相邻 octant 层级差 ≤ 1（p4est 2:1 balance 保证）
-- [ ] `partition()` 后各 rank 的 `local_num_octants()` 差异 ≤ 1（均匀分区）
-- [ ] `src/common/types.h` 和 `bounding_box.h` 不 include 任何 p4est / MPI 头文件
-- [ ] `octree_forest.h` 的 public API 中不出现任何 `p8est_*` 类型
+- [x] `cmake -B build -DP4EST_ROOT=<path> && cmake --build build -j4` 编译通过，无 warning
+- [x] `ctest --output-on-failure` 中 `test_octree_forest` 通过（4 rank，`--oversubscribe`）
+- [x] 单位立方体均匀细化 2 层后，所有 rank 的 `local_num_octants()` 之和 = 64
+- [x] `quadrant_bounds()` 对所有 octant 返回不重叠、拼合覆盖整个 domain 的包围盒
+- [x] `quadrant_level()` 在 level-2 均匀细化后返回 2
+- [x] `balance()` 后相邻 octant 层级差 ≤ 1（p4est 2:1 balance 保证）
+- [x] `partition()` 后各 rank 的 `local_num_octants()` 差异 ≤ 1（均匀分区）
+- [x] `src/common/types.h` 和 `bounding_box.h` 不 include 任何 p4est / MPI 头文件
+- [x] `octree_forest.h` 的 public API 中不出现任何 `p8est_*` 类型
 
 ---
 

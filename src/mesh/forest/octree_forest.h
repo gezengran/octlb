@@ -13,6 +13,7 @@ namespace octlb {
 
 /** Parallel octree forest (p4est backend); topology only, no physics. */
 class OctreeForest {
+  friend struct MeshForestAccess;
  public:
   OctreeForest(MPI_Comm comm, BoundingBox domain);
   ~OctreeForest();
@@ -24,7 +25,8 @@ class OctreeForest {
 
   void refine(std::function<bool(OctantId)> criterion, int max_level);
   void balance();
-  void partition();
+  /** Uniform partition when \a weight_fn is null; else \c p8est_partition_ext. */
+  void partition(std::function<int(OctantId)> weight_fn = nullptr);
 
   label local_num_octants() const;
   BoundingBox quadrant_bounds(OctantId id) const;
@@ -33,6 +35,8 @@ class OctreeForest {
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
+
+  static void RebuildGhostLayer(Impl* impl);
 };
 
 }  // namespace octlb
