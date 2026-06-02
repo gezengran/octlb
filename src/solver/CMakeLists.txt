@@ -9,3 +9,4 @@ target_include_directories(octlb_field
 target_compile_features(octlb_field INTERFACE cxx_std_17)
 
 add_subdirectory(field)
+add_subdirectory(lbm)
