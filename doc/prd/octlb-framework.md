@@ -119,6 +119,13 @@ namespace octlb {
 using label    = int32_t;   // 整数索引，对应 OpenFOAM label
 using scalar   = double;    // 浮点数，对应 OpenFOAM scalar
 using OctantId = label;     // 本地 quadrant 线性序号（0…local_num_quadrants-1）
+
+// 面方向编码（与 p4est 内部整数 0-5 一一对应，避免魔法数字）
+enum class FaceDir : int {
+  kXMin = 0, kXMax = 1,
+  kYMin = 2, kYMax = 3,
+  kZMin = 4, kZMax = 5,
+};
 }
 
 // bounding_box.h
@@ -141,8 +148,10 @@ struct BoundingBox {
 - 封装 p4est 的 `p8est_t` forest，提供 refine / balance / partition 操作。
 - 构造函数：`OctreeForest(MPI_Comm comm, BoundingBox domain)`；内部固定使用 `p8est_connectivity_new_unitcube()`，物理坐标由 `domain` 缩放。
 - `refine()` 签名：`void refine(std::function<bool(OctantId)> criterion, int max_level)`；内部通过 `user_pointer` 桥接 p4est C 回调。
+- `partition()` 签名：`void partition(std::function<int(OctantId)> weight_fn = nullptr)`；`weight_fn == nullptr` 时均匀分区（`p8est_partition`），否则加权分区（`p8est_partition_ext`）；每次调用后自动重建 ghost 层。
 - 对外暴露接口：`local_num_octants()`, `quadrant_bounds(OctantId)`, `quadrant_level(OctantId)`。
 - `quadrant_bounds()` 返回 `BoundingBox`，将 p4est 整数坐标按 `domain` 缩放为物理坐标。
+- 内部持有 `p8est_ghost_t*`，在 `partition()` 后重建、析构时销毁；仅供 Mesh 模块内部（`FacePairList`）通过模块内访问器使用。
 - 不暴露任何 `p8est_*` 类型给 Solver 模块。
 
 #### FacePairList
@@ -160,9 +169,10 @@ struct BoundingBox {
 
 #### WeightedLoadBalancer
 
-- 提供 `p8est_partition_ext` 的权重回调：weight(octant) = 2^level。
-- 在 `OctreeForest::balance()` 完成后调用。
+- 提供 free function `make_level_weight_fn(const OctreeForest&)`，返回 weight(octant) = 2^level 的 lambda。
+- 调用方：`forest.partition(make_level_weight_fn(forest))`，在 `balance()` 完成后执行。
 - 第一版静态分层只需初始化时调用一次。
+- `WeightedLoadBalancer` 自身不持有任何 p4est 类型；分区操作由 `OctreeForest::partition()` 统一执行。
 
 ---
 
@@ -286,7 +296,7 @@ advance(level l):
 | 2 | `test_geometry_engine` | 硬编码 triangle soup（立方体）输入，CGAL 体素化产出正确 fluid/solid/boundary 标签；不依赖文件 I/O | Mesh/geometry |
 | 3 | `test_face_pair_list` | p8est_iterate face callback 正确识别同级面和粗细 hanging 面 | Mesh/topology |
 | 4 | `test_load_balancer` | 2^level 权重分区后各 rank 总权重差异 < 5% | Mesh |
-| 5 | `test_ghost_topology` | ghost octant 列表与 FacePairList 一致（每条面对两端都认识对方） | Mesh |
+| 5 | `test_ghost_topology` | FacePairList 中每条跨 rank 面对的 remote_rank 与 p4est ghost 层记录一致（本地校验）；精心细化模式确保 hanging 面和跨 rank 面必然出现 | Mesh |
 | 6 | `test_block_collection` | `BlockCollection<T>` 增删查，以 `octant_id` 为键；`BlockIterator` 遍历正确 | Solver/field |
 | 7 | `test_collision_bgk` | 单块 BGK 碰撞：质量守恒、动量守恒，收敛至 Maxwell 平衡态 | Solver/lbm |
 | 8 | `test_ghost_schedule` | 2-rank，交换面层后两块 overlap 值一致（MPI 正确性） | Solver/field |
@@ -353,12 +363,12 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 
 | 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
 |---|---|---|---|---|
-| OctreeForest | `mesh/forest/` | 未开始 | `test_octree_forest` | 参考 octree-mesh 重写 |
+| OctreeForest | `mesh/forest/` | 测试绿 | `test_octree_forest` | T01；CI main 已通过 |
 | stl_reader | `mesh/io/stl_reader/` | 未开始 | `test_stl_reader` | 移植自 OpenLB |
 | GeometryEngine + MaterialField | `mesh/geometry/` | 未开始 | `test_geometry_engine` | CGAL 体素化；参考 GeometryAdaptiveEngine |
-| FacePairList | `mesh/topology/` | 未开始 | `test_face_pair_list` | 基于 `p8est_iterate` face callback |
-| WeightedLoadBalancer | `mesh/load_balance/` | 未开始 | `test_load_balancer` | 权重 2^level |
-| Ghost 拓扑一致性 | `mesh/topology/` | 未开始 | `test_ghost_topology` | 验证两端互认 |
+| FacePairList | `mesh/topology/` | 测试绿 | `test_face_pair_list` | T02；本地 4-rank 通过，待 CI |
+| WeightedLoadBalancer | `mesh/load_balance/` | 测试绿 | `test_load_balancer` | T02；本地 4-rank 通过，待 CI |
+| Ghost 拓扑一致性 | `mesh/topology/` | 测试绿 | `test_ghost_topology` | T02；本地 4-rank 通过，待 CI |
 
 ### Solver/field 模块
 

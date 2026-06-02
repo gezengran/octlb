@@ -7,7 +7,10 @@
 #include <p8est.h>
 #include <p8est_bits.h>
 #include <p8est_extended.h>
+#include <p8est_ghost.h>
 #include <sc.h>
+
+#include "src/mesh/forest/octree_forest_access.h"
 
 namespace octlb {
 namespace {
@@ -49,6 +52,17 @@ struct RefineBridge {
   int max_level = 0;
 };
 
+struct PartitionBridge {
+  std::function<int(OctantId)> weight_fn;
+};
+
+int PartitionWeightCallback(p8est_t* forest, p4est_topidx_t which_tree,
+                            p8est_quadrant_t* quadrant) {
+  auto* bridge = static_cast<PartitionBridge*>(forest->user_pointer);
+  const OctantId id = LocalOctantIndex(forest, which_tree, quadrant);
+  return bridge->weight_fn(id);
+}
+
 int RefineCallback(p8est_t* forest, p4est_topidx_t which_tree,
                    p8est_quadrant_t* quadrant) {
   auto* bridge = static_cast<RefineBridge*>(forest->user_pointer);
@@ -66,9 +80,15 @@ struct OctreeForest::Impl {
   BoundingBox domain{};
   p8est_connectivity_t* connectivity = nullptr;
   p8est_t* forest = nullptr;
+  p8est_ghost_t* ghost = nullptr;
   RefineBridge refine_bridge{};
+  PartitionBridge partition_bridge{};
 
   ~Impl() {
+    if (ghost != nullptr) {
+      p8est_ghost_destroy(ghost);
+      ghost = nullptr;
+    }
     if (forest != nullptr) {
       p8est_destroy(forest);
       forest = nullptr;
@@ -79,6 +99,17 @@ struct OctreeForest::Impl {
     }
   }
 };
+
+void OctreeForest::RebuildGhostLayer(Impl* impl) {
+  if (impl->ghost != nullptr) {
+    p8est_ghost_destroy(impl->ghost);
+    impl->ghost = nullptr;
+  }
+  impl->ghost = p8est_ghost_new(impl->forest, P8EST_CONNECT_FACE);
+  if (impl->ghost == nullptr) {
+    throw std::runtime_error("p8est_ghost_new failed");
+  }
+}
 
 OctreeForest::OctreeForest(MPI_Comm comm, BoundingBox domain)
     : impl_(std::make_unique<Impl>()) {
@@ -116,8 +147,15 @@ void OctreeForest::balance() {
   p8est_balance(impl_->forest, P8EST_CONNECT_FACE, nullptr);
 }
 
-void OctreeForest::partition() {
-  p8est_partition(impl_->forest, 0, nullptr);
+void OctreeForest::partition(std::function<int(OctantId)> weight_fn) {
+  if (weight_fn) {
+    impl_->partition_bridge.weight_fn = std::move(weight_fn);
+    impl_->forest->user_pointer = &impl_->partition_bridge;
+    p8est_partition_ext(impl_->forest, 0, PartitionWeightCallback);
+  } else {
+    p8est_partition(impl_->forest, 0, nullptr);
+  }
+  OctreeForest::RebuildGhostLayer(impl_.get());
 }
 
 label OctreeForest::local_num_octants() const {
@@ -150,6 +188,14 @@ int OctreeForest::quadrant_level(OctantId id) const {
       impl_->forest->trees, impl_->forest->first_local_tree);
   p8est_quadrant_t* q = p8est_quadrant_array_index(&tree->quadrants, id);
   return static_cast<int>(q->level);
+}
+
+p8est_t* MeshForestAccess::Forest(const OctreeForest& forest) {
+  return forest.impl_->forest;
+}
+
+p8est_ghost_t* MeshForestAccess::Ghost(const OctreeForest& forest) {
+  return forest.impl_->ghost;
 }
 
 }  // namespace octlb
