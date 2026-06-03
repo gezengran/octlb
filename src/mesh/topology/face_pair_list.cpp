@@ -1,6 +1,10 @@
 #include "src/mesh/topology/face_pair_list.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <p8est_bits.h>
 #include <p8est_iterate.h>
@@ -15,6 +19,9 @@ struct FaceBuildContext {
   p8est_t* forest = nullptr;
   p8est_ghost_t* ghost = nullptr;
   int my_rank = 0;
+  std::unordered_map<uint64_t, int> comm_tag_by_face_key;
+  std::unordered_map<int, uint64_t> tag_owner;
+  std::unordered_set<uint64_t> cross_rank_face_keys;
   std::vector<SameLevelFace>* same_level = nullptr;
   std::vector<CoarseFineFace>* coarse_fine = nullptr;
 };
@@ -82,6 +89,75 @@ bool ResolveHangingSide(const FaceBuildContext& ctx,
   return true;
 }
 
+uint64_t QuadrantKey(p4est_topidx_t treeid, const p8est_quadrant_t* q) {
+  return (static_cast<uint64_t>(treeid) << 48) |
+         (static_cast<uint64_t>(q->level) << 40) |
+         (static_cast<uint64_t>(q->x) << 30) |
+         (static_cast<uint64_t>(q->y) << 20) |
+         (static_cast<uint64_t>(q->z) << 10);
+}
+
+uint64_t Mix64(uint64_t h) {
+  h ^= h >> 33;
+  h *= 0xff51afd7ed558ccdULL;
+  h ^= h >> 33;
+  h *= 0xc4ceb9fe1a85ec53ULL;
+  h ^= h >> 33;
+  return h;
+}
+
+uint64_t CanonicalFaceKey(uint64_t ka, uint64_t kb, int face) {
+  if (ka > kb) {
+    std::swap(ka, kb);
+    face ^= 1;
+  }
+  uint64_t h = ka;
+  h = Mix64(h ^ kb);
+  h = Mix64(h ^ static_cast<uint64_t>(face));
+  return h;
+}
+
+int AssignCommTag(FaceBuildContext* ctx, uint64_t face_key) {
+  const auto existing = ctx->comm_tag_by_face_key.find(face_key);
+  if (existing != ctx->comm_tag_by_face_key.end()) {
+    return existing->second;
+  }
+
+  int tag = static_cast<int>(Mix64(face_key) & 0x7FFFFFFF);
+  if (tag <= 0) {
+    tag = 1;
+  }
+  uint64_t salt = face_key;
+  while (ctx->tag_owner.count(tag) != 0 &&
+         ctx->tag_owner[tag] != face_key) {
+    salt = Mix64(salt ^ static_cast<uint64_t>(tag));
+    tag = static_cast<int>(salt & 0x7FFFFFFF);
+    if (tag <= 0) {
+      tag = 1;
+    }
+  }
+  ctx->tag_owner[tag] = face_key;
+  ctx->comm_tag_by_face_key.emplace(face_key, tag);
+  return tag;
+}
+
+uint64_t SymmetricFaceKey(const p8est_quadrant_t* qa,
+                          const p8est_quadrant_t* qb, p4est_topidx_t tree_a,
+                          p4est_topidx_t tree_b, int face) {
+  return CanonicalFaceKey(QuadrantKey(tree_a, qa), QuadrantKey(tree_b, qb),
+                          face);
+}
+
+int MakeSymmetricCommTag(FaceBuildContext* ctx, const p8est_quadrant_t* qa,
+                         const p8est_quadrant_t* qb, p4est_topidx_t tree_a,
+                         p4est_topidx_t tree_b, int face) {
+  if (qa == nullptr || qb == nullptr) {
+    return -1;
+  }
+  return AssignCommTag(ctx,
+                       SymmetricFaceKey(qa, qb, tree_a, tree_b, face));
+}
+
 bool SideHasLocalQuadrant(const FaceBuildContext& ctx,
                           const p8est_iter_face_side_t& side) {
   if (side.is_hanging != 0) {
@@ -97,7 +173,7 @@ bool SideHasLocalQuadrant(const FaceBuildContext& ctx,
 }
 
 void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
-  auto* ctx = static_cast<FaceBuildContext*>(user_data);
+  auto* build = static_cast<FaceBuildContext*>(user_data);
   if (info->tree_boundary != 0) {
     return;
   }
@@ -110,8 +186,8 @@ void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
   p8est_iter_face_side_t* side1 =
       p8est_iter_fside_array_index_int(&info->sides, 1);
 
-  const bool local0 = SideHasLocalQuadrant(*ctx, *side0);
-  const bool local1 = SideHasLocalQuadrant(*ctx, *side1);
+  const bool local0 = SideHasLocalQuadrant(*build, *side0);
+  const bool local1 = SideHasLocalQuadrant(*build, *side1);
   if (!local0 && !local1) {
     return;
   }
@@ -124,8 +200,8 @@ void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
     OctantId id1 = 0;
     int rank0 = -1;
     int rank1 = -1;
-    if (!ResolveFullSide(*ctx, *side0, &id0, &rank0) ||
-        !ResolveFullSide(*ctx, *side1, &id1, &rank1)) {
+    if (!ResolveFullSide(*build, *side0, &id0, &rank0) ||
+        !ResolveFullSide(*build, *side1, &id1, &rank1)) {
       return;
     }
     const p8est_iter_face_side_t* local_side = local0 ? side0 : side1;
@@ -138,10 +214,27 @@ void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
       remote_id = id0;
       remote_rank = rank0;
     }
-    (void)remote_side;
-    ctx->same_level->push_back(
-        {local_id, static_cast<FaceDir>(local_side->face), remote_id,
-         remote_rank});
+    const int comm_tag = MakeSymmetricCommTag(
+        build, side0->is.full.quad, side1->is.full.quad, side0->treeid,
+        side1->treeid, side0->face);
+    if (comm_tag < 0) {
+      return;
+    }
+    const uint64_t face_key = SymmetricFaceKey(
+        side0->is.full.quad, side1->is.full.quad, side0->treeid,
+        side1->treeid, side0->face);
+    if (remote_rank != build->my_rank &&
+        !build->cross_rank_face_keys.insert(face_key).second) {
+      return;
+    }
+    const FaceDir local_dir = static_cast<FaceDir>(local_side->face);
+    const FaceDir remote_dir = static_cast<FaceDir>(remote_side->face);
+    build->same_level->push_back(
+        {local_id, local_dir, remote_id, remote_rank, comm_tag});
+    if (remote_rank == build->my_rank) {
+      build->same_level->push_back(
+          {remote_id, remote_dir, local_id, remote_rank, comm_tag});
+    }
     return;
   }
 
@@ -154,12 +247,12 @@ void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
   int coarse_rank = -1;
   OctantId fine_ids[4] = {};
   int remote_ranks[4] = {};
-  if (!ResolveFullSide(*ctx, *coarse_side, &coarse_id, &coarse_rank) ||
-      !ResolveHangingSide(*ctx, *fine_side, fine_ids, remote_ranks)) {
+  if (!ResolveFullSide(*build, *coarse_side, &coarse_id, &coarse_rank) ||
+      !ResolveHangingSide(*build, *fine_side, fine_ids, remote_ranks)) {
     return;
   }
-  if (!SideHasLocalQuadrant(*ctx, *coarse_side) &&
-      !SideHasLocalQuadrant(*ctx, *fine_side)) {
+  if (!SideHasLocalQuadrant(*build, *coarse_side) &&
+      !SideHasLocalQuadrant(*build, *fine_side)) {
     return;
   }
 
@@ -171,7 +264,7 @@ void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
     entry.remote_ranks[i] = remote_ranks[i];
   }
   (void)coarse_rank;
-  ctx->coarse_fine->push_back(entry);
+  build->coarse_fine->push_back(entry);
 }
 
 void BuildFromForest(const OctreeForest& forest, FaceBuildContext* ctx) {

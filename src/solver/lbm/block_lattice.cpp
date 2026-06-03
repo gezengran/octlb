@@ -1,9 +1,193 @@
 #include "block_lattice.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <stdexcept>
 
 namespace octlb {
+
+template <typename T, typename DESCRIPTOR>
+int BlockLattice<T, DESCRIPTOR>::face_buffer_count(int nx, int ny, int nz,
+                                                   FaceDir dir) {
+  switch (dir) {
+    case FaceDir::kXMin:
+    case FaceDir::kXMax:
+      return ny * nz * kQ;
+    case FaceDir::kYMin:
+    case FaceDir::kYMax:
+      return nx * nz * kQ;
+    case FaceDir::kZMin:
+    case FaceDir::kZMax:
+      return nx * ny * kQ;
+  }
+  return 0;
+}
+
+template <typename T, typename DESCRIPTOR>
+void BlockLattice<T, DESCRIPTOR>::pack_face(FaceDir dir, T* buffer,
+                                            int count) const {
+  const int expected = face_buffer_count(nx_, ny_, nz_, dir);
+  if (count < expected) {
+    throw std::runtime_error("BlockLattice::pack_face: buffer too small");
+  }
+  int out = 0;
+  const auto copy_cell = [&](int hx, int hy, int hz) {
+    const int base = halo_idx(hx, hy, hz);
+    for (int iPop = 0; iPop < kQ; ++iPop) {
+      buffer[out++] = populations_[base + iPop];
+    }
+  };
+
+  switch (dir) {
+    case FaceDir::kXMin:
+      for (int iy = 0; iy < ny_; ++iy)
+        for (int iz = 0; iz < nz_; ++iz) {
+          copy_cell(h_, iy + h_, iz + h_);
+        }
+      break;
+    case FaceDir::kXMax:
+      for (int iy = 0; iy < ny_; ++iy)
+        for (int iz = 0; iz < nz_; ++iz) {
+          copy_cell(nx_ + h_ - 1, iy + h_, iz + h_);
+        }
+      break;
+    case FaceDir::kYMin:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iz = 0; iz < nz_; ++iz) {
+          copy_cell(ix + h_, h_, iz + h_);
+        }
+      break;
+    case FaceDir::kYMax:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iz = 0; iz < nz_; ++iz) {
+          copy_cell(ix + h_, ny_ + h_ - 1, iz + h_);
+        }
+      break;
+    case FaceDir::kZMin:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iy = 0; iy < ny_; ++iy) {
+          copy_cell(ix + h_, iy + h_, h_);
+        }
+      break;
+    case FaceDir::kZMax:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iy = 0; iy < ny_; ++iy) {
+          copy_cell(ix + h_, iy + h_, nz_ + h_ - 1);
+        }
+      break;
+  }
+}
+
+template <typename T, typename DESCRIPTOR>
+void BlockLattice<T, DESCRIPTOR>::read_ghost_face(FaceDir dir, T* buffer,
+                                                  int count) const {
+  const int expected = face_buffer_count(nx_, ny_, nz_, dir);
+  if (count < expected) {
+    throw std::runtime_error("BlockLattice::read_ghost_face: buffer too small");
+  }
+  int in = 0;
+  const auto read_cell = [&](int hx, int hy, int hz) {
+    const int base = halo_idx(hx, hy, hz);
+    for (int iPop = 0; iPop < kQ; ++iPop) {
+      buffer[in++] = populations_[base + iPop];
+    }
+  };
+
+  switch (dir) {
+    case FaceDir::kXMin:
+      for (int iy = 0; iy < ny_; ++iy)
+        for (int iz = 0; iz < nz_; ++iz) {
+          read_cell(h_ - 1, iy + h_, iz + h_);
+        }
+      break;
+    case FaceDir::kXMax:
+      for (int iy = 0; iy < ny_; ++iy)
+        for (int iz = 0; iz < nz_; ++iz) {
+          read_cell(nx_ + h_, iy + h_, iz + h_);
+        }
+      break;
+    case FaceDir::kYMin:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iz = 0; iz < nz_; ++iz) {
+          read_cell(ix + h_, h_ - 1, iz + h_);
+        }
+      break;
+    case FaceDir::kYMax:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iz = 0; iz < nz_; ++iz) {
+          read_cell(ix + h_, ny_ + h_, iz + h_);
+        }
+      break;
+    case FaceDir::kZMin:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iy = 0; iy < ny_; ++iy) {
+          read_cell(ix + h_, iy + h_, h_ - 1);
+        }
+      break;
+    case FaceDir::kZMax:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iy = 0; iy < ny_; ++iy) {
+          read_cell(ix + h_, iy + h_, nz_ + h_);
+        }
+      break;
+  }
+}
+
+template <typename T, typename DESCRIPTOR>
+void BlockLattice<T, DESCRIPTOR>::unpack_face(FaceDir dir, const T* buffer,
+                                              int count) {
+  const int expected = face_buffer_count(nx_, ny_, nz_, dir);
+  if (count < expected) {
+    throw std::runtime_error("BlockLattice::unpack_face: buffer too small");
+  }
+  int in = 0;
+  const auto paste_cell = [&](int hx, int hy, int hz) {
+    const int base = halo_idx(hx, hy, hz);
+    for (int iPop = 0; iPop < kQ; ++iPop) {
+      populations_[base + iPop] = buffer[in++];
+    }
+  };
+
+  switch (dir) {
+    case FaceDir::kXMin:
+      for (int iy = 0; iy < ny_; ++iy)
+        for (int iz = 0; iz < nz_; ++iz) {
+          paste_cell(h_ - 1, iy + h_, iz + h_);
+        }
+      break;
+    case FaceDir::kXMax:
+      for (int iy = 0; iy < ny_; ++iy)
+        for (int iz = 0; iz < nz_; ++iz) {
+          paste_cell(nx_ + h_, iy + h_, iz + h_);
+        }
+      break;
+    case FaceDir::kYMin:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iz = 0; iz < nz_; ++iz) {
+          paste_cell(ix + h_, h_ - 1, iz + h_);
+        }
+      break;
+    case FaceDir::kYMax:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iz = 0; iz < nz_; ++iz) {
+          paste_cell(ix + h_, ny_ + h_, iz + h_);
+        }
+      break;
+    case FaceDir::kZMin:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iy = 0; iy < ny_; ++iy) {
+          paste_cell(ix + h_, iy + h_, h_ - 1);
+        }
+      break;
+    case FaceDir::kZMax:
+      for (int ix = 0; ix < nx_; ++ix)
+        for (int iy = 0; iy < ny_; ++iy) {
+          paste_cell(ix + h_, iy + h_, nz_ + h_);
+        }
+      break;
+  }
+}
 
 template <typename T, typename DESCRIPTOR>
 BlockLattice<T, DESCRIPTOR>::BlockLattice(int nx, int ny, int nz, int halo)

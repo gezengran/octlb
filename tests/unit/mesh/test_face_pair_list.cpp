@@ -78,4 +78,22 @@ TEST(FacePairList, CenterRefineProducesCoarseFineFacesWithFourFines) {
   }
 }
 
+TEST(FacePairList, CrossRankFacesShareSymmetricCommTag) {
+  int rank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+  OctreeForest forest(MPI_COMM_WORLD, UnitCubeDomain());
+  forest.refine([](OctantId) { return true; }, 1);
+  forest.balance();
+  forest.partition();
+
+  const FacePairList pairs(forest);
+  for (const SameLevelFace& face : pairs.same_level_faces()) {
+    if (face.remote_rank == rank) {
+      continue;
+    }
+    EXPECT_GT(face.comm_tag, 0);
+  }
+}
+
 }  // namespace octlb

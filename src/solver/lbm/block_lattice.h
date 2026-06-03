@@ -9,6 +9,8 @@
 
 #include <vector>
 
+#include "src/common/types.h"
+
 namespace octlb {
 
 // Proxy for a single lattice cell; satisfies olb::concepts::MinimalCell.
@@ -54,9 +56,13 @@ struct CellProxy {
 template <typename T, typename DESCRIPTOR>
 class BlockLattice {
  public:
+  using face_value_t = T;
+
   static constexpr int kQ = DESCRIPTOR::q;
 
   BlockLattice(int nx, int ny, int nz, int halo = 1);
+
+  static int face_buffer_count(int nx, int ny, int nz, FaceDir dir);
 
   // Set every interior cell to the Maxwell equilibrium for (rho0, u0).
   void initialize(T rho0, const T* u0);
@@ -78,6 +84,10 @@ class BlockLattice {
   // exchange after collide() and before stream().
   void fill_periodic_halo();
 
+  void pack_face(FaceDir dir, T* buffer, int count) const;
+  void unpack_face(FaceDir dir, const T* buffer, int count);
+  void read_ghost_face(FaceDir dir, T* buffer, int count) const;
+
   // Cell proxy at physical coordinates (0-based, interior only).
   CellProxy<T, DESCRIPTOR> get(int ix, int iy, int iz);
 
@@ -86,6 +96,11 @@ class BlockLattice {
   int nz() const { return nz_; }
 
  private:
+  int halo_idx(int hx, int hy, int hz) const {
+    return (hx * (ny_ + 2 * h_) * (nz_ + 2 * h_) + hy * (nz_ + 2 * h_) + hz) *
+           kQ;
+  }
+
   // Index into populations_ (includes halo offset).
   int idx(int ix, int iy, int iz) const {
     return ((ix + h_) * (ny_ + 2*h_) * (nz_ + 2*h_)

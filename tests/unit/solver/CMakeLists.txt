@@ -41,3 +41,26 @@ add_test(NAME test_block_collection
     --oversubscribe
     $<TARGET_FILE:test_block_collection>
 )
+
+add_executable(test_ghost_schedule
+  test_ghost_schedule.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
+
+target_compile_features(test_ghost_schedule PRIVATE cxx_std_20)
+
+target_link_libraries(test_ghost_schedule
+  PRIVATE
+    octlb_field_schedule
+    octlb_lbm
+    GTest::gtest
+    MPI::MPI_CXX
+)
+
+add_test(NAME test_ghost_schedule
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 2
+    --oversubscribe
+    $<TARGET_FILE:test_ghost_schedule>
+)

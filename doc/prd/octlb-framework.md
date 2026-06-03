@@ -47,7 +47,7 @@ OctLB 采用**两模块架构**：
 
 6. 作为求解器开发者，我希望 Mesh 模块完全不感知 LBM 物理量，以便将来在同一 Mesh 上叠加 FVM 或其他 PDE 求解器。
 
-7. 作为框架维护者，我希望 `field/` 子层中的 `BlockCollection<T>` 和 `GhostSchedule<T>` 不依赖任何 LBM 头文件，以便将来将其提取为独立的字段容器中间层。
+7. 作为框架维护者，我希望 `field/` 子层中的 `BlockCollection<T>`、`GhostSchedule<T>`（及 `FacePackable`）不依赖任何 LBM 头文件；`GhostSchedule` 可通过 `octlb_field_schedule` 依赖 Mesh 拓扑，以便将来将无 Mesh 部分提取为独立字段容器中间层。
 
 8. 作为仿真工程师，我希望以 VTK `.vts`/`.vtm`/`.pvd` 格式输出并行 AMR 仿真结果，以便在 ParaView 中直接可视化不同细化层级的流场。
 
@@ -79,8 +79,9 @@ OctLB/
 │       ├── field/        ← FieldContainer 层（不 include LBM 头文件）
 │       │   ├── block_collection.h
 │       │   ├── block_iterator.h
-│       │   ├── face_iterator.h
-│       │   └── ghost_schedule.h
+│       │   ├── face_packable.h
+│       │   ├── ghost_schedule.h      # T05；octlb_field_schedule
+│       │   └── face_iterator.h       # T05；CoarseFineFaces 遍历
 │       │
 │       ├── io/           ← Solver 模块内共用 IO（不依赖 LBM 头文件）
 │       │   ├── vtk_writer/   # 移植 blockVtkWriter3D，替换驱动层
@@ -161,10 +162,12 @@ struct BoundingBox {
 #### FacePairList
 
 - 通过 `p8est_iterate` + face callback 一次性遍历所有面，构建两类列表：
-  - **SameLevelFaces**：`{local_block_id, face_dir, remote_block_id, remote_rank}`
+  - **SameLevelFaces**：`{local_block_id, face_dir, remote_block_id, remote_rank, comm_tag}`
+    - `comm_tag`：在 face callback 内由两侧 quadrant 几何信息生成的**对称** MPI tag（T05）；跨 rank send/recv 成对使用，同 rank 忽略。
+    - 跨 rank 时 `remote_block_id` 为 p4est ghost 索引，**不是**远端 rank 的 `OctantId`。
   - **CoarseFineFaces**：`{coarse_block_id, fine_block_ids[4], face_normal, remote_ranks[4]}`
-- 粗细面识别依据：face callback 中 `is_hanging == 1` 的一侧为 4 个细格，`is_hanging == 0` 的一侧为 1 个粗格。
-- 静态分层下初始化一次，预留 `rebuild()` 接口供动态 AMR 扩展。
+- 粗细面识别依据：face callback 中 `is_hanging == 1` 的一侧为 4 个细格，`is_hanging == 0` 的一侧为 1 个粗格；**不**进入 `SameLevelFaces`。
+- 静态分层下初始化一次，预留 `rebuild()` 接口供动态 AMR 扩展；`rebuild()` 后须重建 `GhostSchedule`（通信计划与 tag 绑定拓扑）。
 
 #### GeometryEngine / MaterialField
 
@@ -196,16 +199,18 @@ struct BoundingBox {
   - 内部使用 `std::vector<T>`，按 OctantId 下标 O(1) 访问。
   - 构造签名：`BlockCollection(label num_octants, std::function<T(OctantId)> factory)`；
     工厂函数在构造时逐 id 调用，不要求 T 默认可构造（兼容 `ConcreteBlockLattice` 等需要参数的类型）。
-  - CMake target：`octlb_field` INTERFACE 库（全为头文件模板），不依赖 `octlb_mesh`、P4est、MPI。
-- **`GhostSchedule<T>`**：从 `FacePairList::SameLevelFaces` 构建 MPI 通信计划。
-  - 交换单位：N×N 面层（`N²×q` 个值），而非整块（N³×q）。
-  - 与 N=8 相比，通信量是整块交换的 1/8；N=10 时为 1/10。
-  - 提供 `pack_face(block, face_dir, buffer)` / `unpack_face(buffer, block, face_dir)` 回调接口，对数据格式无假设。
+  - CMake target：`octlb_field` INTERFACE 库（`BlockCollection`、`BlockIterator`、`FacePackable` concept），不依赖 `octlb_mesh`、P4est、MPI。
+- **`GhostSchedule<T>`**（T05）：从 `FacePairList::SameLevelFaces` **构造时**固化通信计划；`exchange()` 执行同级 halo 交换。
+  - **范围**：仅同级、同尺寸块的 1:1 面；**不**处理 `CoarseFineFaces`（粗细 1:4 由 T06 `LevelCoupler` / Lagrava 负责）。
+  - 交换单位：每面单层 N×N 字段（LBM 为 `N²×Q`），非整块 `N³×Q`。
+  - **FacePackable**：`T` 提供 `pack_face(dir, buf, n)` / `unpack_face(dir, buf, n)`；pack 读 interior 最外层，unpack 写紧贴 interior 的 ghost 第一层（D3Q19 每步刷新 1 层，与 halo 总深度 `h` 无关）。
+  - **同 rank**：`remote_rank == my_rank` 时 pack 后直接 `unpack` 到 `remote_id` 块的 `opposite(dir)` ghost，不走 MPI。
+  - **跨 rank**：使用 `SameLevelFace::comm_tag` 匹配 `Isend`/`Irecv`；每步热路径无计划重建。
+  - CMake target：`octlb_field_schedule` INTERFACE，依赖 `octlb_field`、`octlb_mesh`、MPI。
 - **`BlockIterator`**：遍历本 rank 所有 `octant_id`（产出 OctantId 整数值，不是 T 引用）。
   - Level 过滤**不在** BlockIterator 内实现；TimeLoop 初始化时从 OctreeForest 缓存
-    `level → [OctantId]` 映射，按层驱动 collide_and_stream。
-- **`FaceIterator`**：遍历 `FacePairList` 中的面对，提供 `(coarse_block, fine_blocks[4], normal)` 视图。
-  - 包装 `FacePairList::CoarseFineFaces`，归属 T05（GhostSchedule 任务），有 Mesh 依赖。
+    `level → [OctantId]` 映射，按层驱动 collide → halo → stream。
+- **`FaceIterator`**（T05）：遍历 `CoarseFineFaces`，提供 `(coarse_block, fine_blocks[4], normal)` 视图，供 T06 `LevelCoupler` 使用；无 LBM 依赖，无耦合 MPI。
 
 #### lbm/ 子层（LBM 专属）
 
@@ -215,14 +220,16 @@ struct BoundingBox {
 - 内存布局：`[Nx+2h][Ny+2h][Nz+2h][Q]` 平坦数组，`h=1` ghost halo，Q 在最内层。
 - 块尺寸：`(N+2)³×Q`，halo 宽度 = 1（D3Q19 streaming 只需 1 格 overlap）。
 - `BlockLattice::collide(omega)` 内部遍历所有非 ghost 格，调用 `olb::collision::BGK::type::apply(cell, params)`——OpenLB 的纯函数模板，只依赖 `concepts::MinimalCell`。
-- `BlockLattice::stream()` 使用 pull-scheme，读取已由 `GhostSchedule` 刷新的 ghost 层。
+- `BlockLattice::pack_face` / `unpack_face`（T05）：满足 `FacePackable`，供 `GhostSchedule` 与测试使用。
+- `BlockLattice::stream()` 使用 pull-scheme，读取已由 `GhostSchedule` 刷新的 ghost 层（`collide` 之后、`stream` 之前调用 `exchange()`）。
 - 初始化时按 `MaterialField` 设置每格 omega（fluid）或标记为 solid/boundary（T07 实现 Bouzidi）。
 - `BlockCollection<BlockLattice>` 从 T03 泛型工厂直接复用，无需修改。
 
 **HaloExchange**
 
-- 使用 `GhostSchedule<f_distribution>` 在每次 streaming 后交换 6 个方向的面层。
-- 面层数据格式：19 个 double/float 的 N×N slab，对应 f 分布函数分量。
+- 每层时间步：`collide()` → `GhostSchedule::exchange()`（同级面）→ `stream()`。
+- 面层数据格式：19 个 double/float 的 N×N slab（单层），对应 f 分布函数分量。
+- 粗细界面不在此路径；由 `LevelCoupler` 在子步间对 `CoarseFineFaces` 做 Lagrava 插值/限制。
 
 **LevelCoupler（Lagrava 方案）**
 
@@ -243,8 +250,9 @@ struct BoundingBox {
 
 ```
 advance(level l):
-  collide_and_stream(all blocks at level l)  // octlb::BlockLattice::collide() + stream()
-  halo_exchange(level l)                      // GhostSchedule，面层 MPI
+  collide(all blocks at level l)              // BlockLattice::collide()
+  halo_exchange(level l)                      // GhostSchedule::exchange()，仅 SameLevelFaces
+  stream(all blocks at level l)               // BlockLattice::stream()
   coupler.apply_half_time(l → l+1)            // LevelCoupler prolongation half-time
   advance(level l+1)                          // 第一个细子步（递归）
   coupler.apply_full_time(l → l+1)            // LevelCoupler prolongation full-time
@@ -253,7 +261,7 @@ advance(level l):
 ```
 
 - 递归深度 = 细化层数（6-8，最大 10），不会溢出栈。
-- 每层的 `collide_and_stream` 是 `octlb::BlockLattice::collide() + stream()` 的并行循环。
+- 每层块上顺序为 `collide()` → `GhostSchedule::exchange()` → `stream()` 的并行循环。
 - 第一版：静态分层，`advance(level 0)` 为入口，层级结构在初始化时确定。
 - **Level-to-OctantId 映射**：TimeLoop 在初始化时调用 `OctreeForest::quadrant_level(id)`
   遍历所有本地 octant，将 `level → [OctantId]` 映射缓存为 `std::vector<std::vector<OctantId>>`，
@@ -354,7 +362,7 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 | 5 | `test_ghost_topology` | FacePairList 中每条跨 rank 面对的 remote_rank 与 p4est ghost 层记录一致（本地校验）；精心细化模式确保 hanging 面和跨 rank 面必然出现 | Mesh |
 | 6 | `test_block_collection` | `BlockCollection<T>` 增删查，以 `octant_id` 为键；`BlockIterator` 遍历正确 | Solver/field |
 | 7 | `test_collision_bgk` | 单块 BGK 碰撞：质量守恒、动量守恒，收敛至 Maxwell 平衡态 | Solver/lbm |
-| 8 | `test_ghost_schedule` | 2-rank，交换面层后两块 overlap 值一致（MPI 正确性） | Solver/field |
+| 8 | `test_ghost_schedule` | L1：`DummyBlock` 覆盖同 rank / 跨 rank / 空计划 / 混合面 / 角点 / `comm_tag`；L2：2-rank `BlockLattice` 邻接面 populations 一致 | Solver/field |
 | 9 | `test_lagrava_coupler` | 2-block（1 粗 1 细），经 N 步后粗细界面处密度/速度连续，无虚假反射 | Solver/lbm |
 | 10 | `test_time_loop_levels` | L=3 递归时间步，各层步数计数符合 1:2:4 关系 | Solver/lbm |
 | 11 | `test_vtk_writer` | 硬编码 `BlockCollection` 输入，输出合法 VTK XML，空间范围与 `quadrant_bounds` 吻合 | Solver/io |
@@ -430,7 +438,9 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 | 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
 |---|---|---|---|---|
 | BlockCollection\<T\> + BlockIterator | `solver/field/` | 测试绿 | `test_block_collection` | 泛型，不依赖 LBM 头文件 |
-| GhostSchedule\<T\> + HaloExchange | `solver/field/` | 未开始 | `test_ghost_schedule` | 面层 MPI，替代 tag 7001/7002 |
+| GhostSchedule\<T\> + FaceIterator | `solver/field/` | 测试绿 | `test_ghost_schedule` | T05；`octlb_field_schedule`；同级面层 MPI |
+| FacePairList `comm_tag` | `mesh/topology/` | 测试绿 | `test_face_pair_list`（扩展） | T05 扩展 T02 |
+| BlockLattice `pack_face` / `unpack_face` | `solver/lbm/` | 测试绿 | `test_ghost_schedule` L2 | T05 |
 
 ### Solver/lbm 模块
 
