@@ -6,7 +6,7 @@ target_include_directories(octlb_field
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
 )
 
-target_compile_features(octlb_field INTERFACE cxx_std_17)
+target_compile_features(octlb_field INTERFACE cxx_std_20)
 
 add_subdirectory(field)
 add_subdirectory(lbm)

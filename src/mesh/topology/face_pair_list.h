@@ -14,6 +14,7 @@ struct SameLevelFace {
   FaceDir dir;
   OctantId remote_id;
   int remote_rank;
+  int comm_tag;  // Symmetric MPI tag for cross-rank halo exchange (T05).
 };
 
 struct CoarseFineFace {
