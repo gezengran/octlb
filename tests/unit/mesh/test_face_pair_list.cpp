@@ -74,6 +74,7 @@ TEST(FacePairList, CenterRefineProducesCoarseFineFacesWithFourFines) {
     (void)face.coarse_id;
     for (int i = 0; i < 4; ++i) {
       EXPECT_GE(face.fine_ids[i], 0);
+      EXPECT_GT(face.comm_tags[i], 0);
     }
   }
 }

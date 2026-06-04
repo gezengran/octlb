@@ -1,5 +1,6 @@
 add_library(octlb_lbm STATIC
   block_lattice.cpp
+  level_coupler.cpp
 )
 
 target_include_directories(octlb_lbm
@@ -10,10 +11,9 @@ target_include_directories(octlb_lbm
 
 target_compile_features(octlb_lbm PUBLIC cxx_std_20)
 
-# No PLATFORM_CPU_SISD needed: OctLB calls equilibrium formulas directly,
-# bypassing OpenLB's platform dispatch framework.
-# No OLB_VERSION, no tinyxml2, no MPI singleton from OpenLB.
-
 target_link_libraries(octlb_lbm
-  PUBLIC MPI::MPI_CXX
+  PUBLIC
+    octlb_mesh
+    octlb_field
+    MPI::MPI_CXX
 )
