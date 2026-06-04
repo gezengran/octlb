@@ -90,15 +90,15 @@ OctLB/
 │       └── lbm/          ← LBM 专属；算法复用策略（见"OpenLB 代码融入策略"）
 │           │             # ── OctLB 自建区（namespace octlb）──
 │           ├── block_lattice.h/.cpp  # octlb::BlockLattice<T,D>，octant 感知格子数据结构
-│           ├── time_loop/    # 递归下降 TimeLoop（T06）
-│           ├── unit_converter/# LBM 单位换算（T06）
+│           ├── level_coupler.h/.cpp  # Lagrava 粗细耦合（T06；算法复用 dynamics/）
+│           ├── time_loop/            # 递归下降 TimeLoop（T06）
+│           ├── unit_converter/       # LBM 单位换算（cavity3d 集成阶段）
 │           │             # ── OpenLB 算法头文件（只读，namespace olb，无 .cpp）──
 │           ├── descriptor/   # D3Q19 等格子常数（c/t/invCs2），~10 个头文件
 │           ├── dynamics/     # BGK/MRT/Smagorinsky kernel、平衡态、矩计算，~12 个头文件
 │           ├── core/         # MinimalCell concept、FieldD、Vector，~5 个头文件
 │           ├── utilities/    # 数学工具（vectorHelpers 等），~5 个头文件
-│           ├── boundary/     # Bouzidi/bounce-back 算法头文件（T07 启用）
-│           └── refinement/   # Lagrava 算子头文件（T06 启用）
+│           └── boundary/     # Bouzidi/bounce-back 算法头文件（T07 启用）
 │
 ├── examples/
 │   ├── cavity3d/         # 初期验证：无 STL，无 AMR，Lid-driven cavity
@@ -165,9 +165,10 @@ struct BoundingBox {
   - **SameLevelFaces**：`{local_block_id, face_dir, remote_block_id, remote_rank, comm_tag}`
     - `comm_tag`：在 face callback 内由两侧 quadrant 几何信息生成的**对称** MPI tag（T05）；跨 rank send/recv 成对使用，同 rank 忽略。
     - 跨 rank 时 `remote_block_id` 为 p4est ghost 索引，**不是**远端 rank 的 `OctantId`。
-  - **CoarseFineFaces**：`{coarse_block_id, fine_block_ids[4], face_normal, remote_ranks[4]}`
-- 粗细面识别依据：face callback 中 `is_hanging == 1` 的一侧为 4 个细格，`is_hanging == 0` 的一侧为 1 个粗格；**不**进入 `SameLevelFaces`。
-- 静态分层下初始化一次，预留 `rebuild()` 接口供动态 AMR 扩展；`rebuild()` 后须重建 `GhostSchedule`（通信计划与 tag 绑定拓扑）。
+  - **CoarseFineFaces**：`{coarse_block_id, fine_block_ids[4], face_normal, remote_ranks[4], comm_tags[4]}`
+    - `comm_tags[i]`：在 face callback 内为 coarse 与 `fine_ids[i]` 之间生成的**对称** MPI tag（T06）；跨 rank 时 `LevelCoupler` 交换 coarse 宏观量使用，同 rank 忽略。
+  - 粗细面识别依据：face callback 中 `is_hanging == 1` 的一侧为 4 个细格，`is_hanging == 0` 的一侧为 1 个粗格；**不**进入 `SameLevelFaces`。
+- 静态分层下初始化一次，预留 `rebuild()` 接口供动态 AMR 扩展；`rebuild()` 后须重建 `GhostSchedule`、`LevelCoupler`（及 `TimeLoop` 层缓存）；通信计划与 tag 绑定拓扑。
 
 #### GeometryEngine / MaterialField
 
@@ -231,22 +232,25 @@ struct BoundingBox {
 - 面层数据格式：19 个 double/float 的 N×N slab（单层），对应 f 分布函数分量。
 - 粗细界面不在此路径；由 `LevelCoupler` 在子步间对 `CoarseFineFaces` 做 Lagrava 插值/限制。
 
-**LevelCoupler（Lagrava 方案）**
+**LevelCoupler（Lagrava 方案，T06）**
 
-移植自 OpenLB `src/refinement/` 的 Lagrava 算子，适配到 `CoarseFineFaces` 拓扑：
+**算法复用 + 自建数据结构**（与 T04 BGK 同路线）：按 Lagrava 公式在 `octlb::LevelCoupler` 内实现 prolongation/restriction；宏观量与平衡态复用 `olb::lbm::*` + `CellProxy`。**不**复制 OpenLB `refinement/` 框架头文件（`BlockRefinementContext` 等）。
 
-- **耦合面来源**：`FacePairList::CoarseFineFaces`（由 `p8est_iterate` face callback 产生），替代 OpenLB 原版的 `SuperIndicatorDomainFrontierDistanceF`。
+- **耦合面来源**：`FacePairList::CoarseFineFaces` + `FaceIterator`（由 `p8est_iterate` face callback 产生），替代 OpenLB 原版的 `SuperIndicatorDomainFrontierDistanceF`。
+- **连接点索引（Solver 侧）**：`LevelCoupler` 构造时从 `FaceIterator` + `OctreeForest::quadrant_bounds()` + 块尺寸 N 固化 **`coupling_plan_`**（cell 级 `(coarse_id,i,j,k) ↔ (fine_id,i,j,k)`）；Mesh 保持 block 级纯拓扑，不存 cell 级 coupling 列表。
 - **粗→细（prolongation）**：
-  - `scalingFactor = (τ_coarse - 0.25) / τ_coarse`
+  - `scalingFactor = (τ - 0.25) / τ`（第一版全域统一 `τ = 1/omega`）
   - `f_fine = f_eq(ρ, u) + scalingFactor × f_neq`
+  - half-time：粗侧宏观量取 prev 与 curr 平均；full-time：使用 curr
   - 在细层第一个子步前（half-time）和第二个子步前（full-time）各执行一次。
 - **细→粗（restriction）**：
-  - `scalingFactor = τ_coarse / (τ_coarse - 0.25)`
-  - 对 4 个细格取均值后重建宏观量，再写回粗格分布函数。
+  - `scalingFactor = τ / (τ - 0.25)`
+  - 对 2:1 子格（界面参与子集）取均值后重建宏观量，写回粗格分布函数。
   - 在两个细子步完成后执行。
-- 跨 rank 的粗细耦合通过 `FaceIterator` 触发额外的 MPI 交换（coarse macro fields → fine side）。
+- **跨 rank MPI**：使用 `CoarseFineFace::comm_tags[i]`；构造时固化 MPI 计划（coarse 宏观量 ρ、u、f_neq → fine 侧），模式对齐 `GhostSchedule`（Irecv → Isend/本地直写 → Waitall）。
+- **拓扑 rebuild**：`FacePairList::rebuild()` 后须销毁并重建 `LevelCoupler`（与 `GhostSchedule` 同级）；第一版静态 AMR 不实现热路径。
 
-**TimeLoop（递归下降）**
+**TimeLoop（递归下降，T06）**
 
 ```
 advance(level l):
@@ -260,12 +264,15 @@ advance(level l):
   coupler.restrict(l+1 → l)                   // LevelCoupler restriction
 ```
 
+- **`TimeLoop` 类 + 外部引用**：构造时注入 `BlockCollection`、`GhostSchedule`、`LevelCoupler`（调用方持有 Schedule/Coupler，便于 `rebuild()` 后整体替换）；`TimeLoop` 不创建或拥有上述对象。
+- **对外 API**：`advance_one()` 从 level 0 递归执行一个粗层时间步；构造时缓存 `level → [OctantId]`。
 - 递归深度 = 细化层数（6-8，最大 10），不会溢出栈。
 - 每层块上顺序为 `collide()` → `GhostSchedule::exchange()` → `stream()` 的并行循环。
-- 第一版：静态分层，`advance(level 0)` 为入口，层级结构在初始化时确定。
+- 第一版：静态分层，层级结构在初始化时确定。
 - **Level-to-OctantId 映射**：TimeLoop 在初始化时调用 `OctreeForest::quadrant_level(id)`
   遍历所有本地 octant，将 `level → [OctantId]` 映射缓存为 `std::vector<std::vector<OctantId>>`，
   之后每步直接按层索引，不再查询 OctreeForest。BlockCollection 和 BlockIterator 本身对 level 无感知。
+- **测试 hook**：各层 `collide`/`stream` 调用计数（或等价可观测接口），供 `test_time_loop_levels` 验证 L=3 时步数比 1:2:4。
 
 **VTK Writer（IO）**
 
@@ -314,7 +321,8 @@ defined" 规则），唯一解是引用 `olb3D.h + olb3D.hh` umbrella，导致�
 | `lbm/core/` | OpenLB | MinimalCell concept、FieldD、Vector 类型 | ~5 |
 | `lbm/utilities/` | OpenLB | 数学工具（vectorHelpers、normSqr 等） | ~5 |
 | `lbm/boundary/` | OpenLB | Bouzidi/bounce-back 算法头（T07 启用） | ~3 |
-| `lbm/refinement/` | OpenLB | Lagrava 算子头（T06 启用） | ~5 |
+
+> **T06 Lagrava**：不复制 `refinement/`；`LevelCoupler` 按 PRD 公式实现，复用已移植的 `dynamics/lbm.h`（`computeRhoU`、`computeFneq`、`equilibrium`）。
 
 **不复制**：`blockLattice.h`、`superLattice.h`、`case/`、`optimization/`、`particles/`、
 `reaction/`、`uq/`、`functors/analytical/`、`geometry/superGeometry.h`、`communication/`（MPI
@@ -363,8 +371,8 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 | 6 | `test_block_collection` | `BlockCollection<T>` 增删查，以 `octant_id` 为键；`BlockIterator` 遍历正确 | Solver/field |
 | 7 | `test_collision_bgk` | 单块 BGK 碰撞：质量守恒、动量守恒，收敛至 Maxwell 平衡态 | Solver/lbm |
 | 8 | `test_ghost_schedule` | L1：`DummyBlock` 覆盖同 rank / 跨 rank / 空计划 / 混合面 / 角点 / `comm_tag`；L2：2-rank `BlockLattice` 邻接面 populations 一致 | Solver/field |
-| 9 | `test_lagrava_coupler` | 2-block（1 粗 1 细），经 N 步后粗细界面处密度/速度连续，无虚假反射 | Solver/lbm |
-| 10 | `test_time_loop_levels` | L=3 递归时间步，各层步数计数符合 1:2:4 关系 | Solver/lbm |
+| 9 | `test_lagrava_coupler` | L1：`coupling_plan_` 条数/索引/象限；L2：同 rank 1 粗+1 细界面 ρ/u 连续、质量守恒；L3：2-rank 跨 rank macro 交换 | Solver/lbm |
+| 10 | `test_time_loop_levels` | L1：L=3 一次 `advance_one()` 后各层 collide 计数 1:2:4、coupler 调用顺序；P1：真实 BlockLattice 不崩溃 | Solver/lbm |
 | 11 | `test_vtk_writer` | 硬编码 `BlockCollection` 输入，输出合法 VTK XML，空间范围与 `quadrant_bounds` 吻合 | Solver/io |
 | 12 | `test_cavity3d_serial` | 单 rank，cavity3d，Re=100，中线速度剖面与 Ghia 1982 参考值误差 < 2% | Integration |
 | 13 | `test_cylinder3d_parallel` | 多 rank（≥4），cylinder3d L=4，阻力系数 Cd 与 OpenLB 参考值误差 < 1% | Integration |
@@ -381,7 +389,7 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 
 ## 不在范围内（第一版）
 
-- **动态 AMR**：运行时 refine/coarsen 及字段迁移（`p4est_transfer_fixed`）。预留接口，不实现。
+- **动态 AMR**：运行时 refine/coarsen 及字段迁移（`p4est_transfer_fixed`）。预留 `FacePairList::rebuild()` 及 Solver 侧 `GhostSchedule` / `LevelCoupler` / `TimeLoop` 重建契约，第一版不实现热路径。
 - **GPU backend**：OpenLB 的 `Platform::GPU_CUDA` / `GPU_HIP`。预留 `Platform` 模板参数，不测试。
 - **HDF5 checkpoint/restart**：预留 `io/checkpoint/` 目录，不实现。
 - **FVM 或其他物理模型**：`field/` 子层设计为可复用，但第一版只跑 LBM。
@@ -429,7 +437,7 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 | OctreeForest | `mesh/forest/` | 测试绿 | `test_octree_forest` | T01；CI main 已通过 |
 | stl_reader | `mesh/io/stl_reader/` | 未开始 | `test_stl_reader` | 移植自 OpenLB |
 | GeometryEngine + MaterialField | `mesh/geometry/` | 未开始 | `test_geometry_engine` | CGAL 体素化；参考 GeometryAdaptiveEngine |
-| FacePairList | `mesh/topology/` | 测试绿 | `test_face_pair_list` | T02；本地 4-rank 通过，待 CI |
+| FacePairList | `mesh/topology/` | 测试绿 | `test_face_pair_list` | T02；T05 `SameLevelFace::comm_tag`；T06 `CoarseFineFace::comm_tags[4]` + `coarse_remote_rank` |
 | WeightedLoadBalancer | `mesh/load_balance/` | 测试绿 | `test_load_balancer` | T02；本地 4-rank 通过，待 CI |
 | Ghost 拓扑一致性 | `mesh/topology/` | 测试绿 | `test_ghost_topology` | T02；本地 4-rank 通过，待 CI |
 
@@ -449,9 +457,10 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 | `octlb::BlockLattice` + BGK | `solver/lbm/block_lattice.*` | 测试绿 | `test_collision_bgk` | T04 已落地并通过本地 ctest 验证 |
 | MRT / Smagorinsky Dynamics | `solver/lbm/dynamics/` | 未开始 | — | 复用 OpenLB 算法头文件，集成测试间接覆盖 |
 | Bouzidi BC | `solver/lbm/boundary/` | 未开始 | — | 复用 OpenLB boundary/ 算法头文件（T07） |
-| LevelCoupler（Lagrava） | `solver/lbm/refinement/` | 未开始 | `test_lagrava_coupler` | 复用 OpenLB refinement/ 算法头文件（T06） |
-| TimeLoop（递归下降） | `solver/lbm/time_loop/` | 未开始 | `test_time_loop_levels` | |
-| unit_converter | `solver/lbm/unit_converter/` | 未开始 | — | 移植自 OpenLB，LBM 专属 |
+| LevelCoupler（Lagrava） | `solver/lbm/level_coupler.*` | 测试绿 | `test_lagrava_coupler`、`test_lagrava_coupler_mpi2` | T06；算法复用 dynamics/，Solver 侧 coupling_plan_ |
+| TimeLoop（递归下降） | `solver/lbm/time_loop/` | 测试绿 | `test_time_loop_levels` | T06；外部引用 GhostSchedule/LevelCoupler；v1 每步全局 `GhostSchedule::exchange()` |
+| CoarseFineFace `comm_tags[4]` | `mesh/topology/` | 测试绿 | `test_face_pair_list`、`test_lagrava_coupler_mpi2` | T06 扩展 T02 |
+| unit_converter | `solver/lbm/unit_converter/` | 未开始 | — | cavity3d 集成阶段；不在 T06 |
 
 ### Solver/io 模块
 

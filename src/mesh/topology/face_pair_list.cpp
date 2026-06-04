@@ -259,11 +259,14 @@ void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
   CoarseFineFace entry{};
   entry.coarse_id = coarse_id;
   entry.normal = static_cast<FaceDir>(coarse_side->face);
+  entry.coarse_remote_rank = coarse_rank;
   for (int i = 0; i < 4; ++i) {
     entry.fine_ids[i] = fine_ids[i];
     entry.remote_ranks[i] = remote_ranks[i];
+    entry.comm_tags[i] = MakeSymmetricCommTag(
+        build, coarse_side->is.full.quad, fine_side->is.hanging.quad[i],
+        coarse_side->treeid, fine_side->treeid, coarse_side->face);
   }
-  (void)coarse_rank;
   build->coarse_fine->push_back(entry);
 }
 

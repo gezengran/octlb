@@ -21,7 +21,9 @@ struct CoarseFineFace {
   OctantId coarse_id;
   OctantId fine_ids[4];
   FaceDir normal;
+  int coarse_remote_rank;
   int remote_ranks[4];
+  int comm_tags[4];  // Symmetric MPI tag per fine slot (T06).
 };
 
 class FacePairList {
