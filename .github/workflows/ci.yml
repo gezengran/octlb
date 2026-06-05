@@ -1,4 +1,4 @@
-# Build and run OctLB unit tests (MPI + p4est).
+# Build and run OctLB unit tests (MPI + p4est + CGAL).
 # p4est is built from the official v2.8.5 release asset (GitHub tarball is complete;
 # auto-generated "Source code" archives are missing sc/ and configure).
 
@@ -56,6 +56,7 @@ jobs:
             libopenmpi-dev \
             openmpi-bin \
             libgtest-dev \
+            libcgal-dev \
             wget
 
       - name: Cache p4est install prefix
@@ -82,7 +83,19 @@ jobs:
       - name: Configure CMake
         run: |
           set -euxo pipefail
-          GTEST_CONFIG="$(find /usr -name 'GTestConfig.cmake' 2>/dev/null | head -1)"
+          # Prefer distro GTest; avoid unrelated miniconda copies under /usr/share.
+          GTEST_CONFIG=""
+          for candidate in \
+            /usr/lib/x86_64-linux-gnu/cmake/GTest/GTestConfig.cmake \
+            /usr/lib/cmake/GTest/GTestConfig.cmake; do
+            if [ -f "${candidate}" ]; then
+              GTEST_CONFIG="${candidate}"
+              break
+            fi
+          done
+          if [ -z "${GTEST_CONFIG}" ]; then
+            GTEST_CONFIG="$(find /usr/lib -name 'GTestConfig.cmake' 2>/dev/null | head -1)"
+          fi
           GTEST_ARGS=()
           if [ -n "${GTEST_CONFIG}" ]; then
             GTEST_ARGS=(-DGTest_DIR="$(dirname "${GTEST_CONFIG}")")
