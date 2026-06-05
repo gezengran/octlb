@@ -24,7 +24,7 @@
 4. **`BlockLattice::pack_face` / `unpack_face`**  
    满足 `FacePackable`；语义：pack = interior 最外一层，unpack = 紧贴 interior 的 ghost 第一层（D3Q19 单步 stream 每层 exchange 刷新 1 层）。
 
-本任务**不**实现 `LevelCoupler`、TimeLoop、域边界 Bouzidi（T06/T07）。
+本任务**不**实现 `LevelCoupler`、TimeLoop、域边界 Bouzidi（T06/T09）。
 
 ---
 
@@ -61,7 +61,7 @@ octlb/
 | **MPI tag** | **9a**：`comm_tag` 在 Mesh 侧 face callback 中对称生成；无 Schedule 构造期配对 Allgatherv |
 | **CMake** | **7b**：`octlb_field` 保持无 mesh/MPI；新建 `octlb_field_schedule` INTERFACE → `octlb_field` + `octlb_mesh` + `MPI` |
 | **每步顺序** | `collide()` → `GhostSchedule::exchange()` → `stream()`（与 T04 `block_lattice` 注释一致） |
-| **域边界** | `tree_boundary` 面不进入 `SameLevelFaces`；外侧 ghost 不由本任务填充（T07 BC） |
+| **域边界** | `tree_boundary` 面不进入 `SameLevelFaces`；外侧 ghost 不由本任务填充（T09 BC） |
 
 ---
 

@@ -16,7 +16,7 @@
 - **算法复用**：直接调用 OpenLB `dynamics/collision.h` 里的 BGK/MRT kernel（纯函数模板，只依赖 `MinimalCell` concept），以及 `dynamics/lbm.h` 里的平衡态公式，**不**引入 OpenLB 的 `ConcreteBlockLattice`、`DynamicsPromise`、`SuperLattice` 等框架层。
 - **依赖最小化**：只复制 OpenLB 的算法头文件（descriptor/、dynamics/算法层、core/concepts.h、utilities/数学工具），约 25 个头文件，无 `.cpp`，无 tinyxml2，无 MPI 单例。
 
-本任务**不**实现边界条件（Bouzidi / bounce-back），留到 T07；  
+本任务**不**实现边界条件（Bouzidi / bounce-back），留到 T09；  
 本任务**不**对接 `BlockCollection<BlockLattice>` 集成，留到 T06（TimeLoop）。
 
 ---
@@ -61,7 +61,7 @@ octlb/
 | **CMake target** | `octlb_lbm` STATIC，只编译 `block_lattice.cpp`，无 tinyxml2，无 MPI 单例依赖 |
 | **CPU 平台** | BGK kernel 是纯 C++ 函数模板，不需要 `PLATFORM_CPU_SISD` 宏 |
 | **Streaming** | Pull-scheme（拉取），OctLB 自实现；ghost halo 由 `GhostSchedule<BlockLattice>`（T05）负责在 streaming 前刷新 |
-| **边界条件** | T04 不实现；周期性测试直接用 halo 参与 stream，T07 加 Bouzidi |
+| **边界条件** | T04 不实现；周期性测试直接用 halo 参与 stream，T09 加 Bouzidi |
 | **与 BlockCollection 的关系** | `BlockCollection<BlockLattice>` 自然适配（T03 泛型工厂构造），T06 集成 |
 
 ---
@@ -225,7 +225,7 @@ T03（BlockCollection<T>，已完成）
 └── T04（本任务）← 可立即开始
     ├── T05 · GhostSchedule<T>（依赖 T02 + T03，与 T04 并行）
     └── T06 · LevelCoupler + TimeLoop（依赖 T04 + T05）
-            └── T07 · VTK Writer + STL Reader + Bouzidi BC（可与 T04-T06 并行）
+            └── T07 · Mesh 几何链 → T08 VTK → T09 Bouzidi（见 `T07-geometry-mesh.md`）
 ```
 
 ---

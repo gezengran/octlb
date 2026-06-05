@@ -47,3 +47,42 @@ endfunction()
 octlb_add_mpi_mesh_test(test_face_pair_list)
 octlb_add_mpi_mesh_test(test_load_balancer)
 octlb_add_mpi_mesh_test(test_ghost_topology)
+
+add_executable(test_stl_reader test_stl_reader.cpp)
+target_compile_features(test_stl_reader PRIVATE cxx_std_17)
+target_compile_definitions(test_stl_reader PRIVATE
+  OCTLB_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
+target_link_libraries(test_stl_reader PRIVATE octlb_mesh_stl GTest::gtest_main)
+add_test(NAME test_stl_reader COMMAND test_stl_reader)
+
+function(octlb_add_mpi_mesh_test_1rank target_name)
+  add_executable(${target_name}
+    ${target_name}.cpp
+    ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+  )
+  target_compile_features(${target_name} PRIVATE cxx_std_17)
+  target_link_libraries(${target_name}
+    PRIVATE
+      octlb_mesh
+      GTest::gtest
+      MPI::MPI_CXX
+  )
+  add_test(NAME ${target_name}
+    COMMAND
+      ${MPIEXEC_EXECUTABLE}
+      ${MPIEXEC_NUMPROC_FLAG} 1
+      --oversubscribe
+      $<TARGET_FILE:${target_name}>
+  )
+endfunction()
+
+octlb_add_mpi_mesh_test_1rank(test_geometry_adaptive_refine)
+octlb_add_mpi_mesh_test_1rank(test_geometry_engine)
+
+add_test(NAME test_geometry_adaptive_refine_two_rank
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 2
+    --oversubscribe
+    $<TARGET_FILE:test_geometry_adaptive_refine>
+    --gtest_filter=GeometryAdaptiveRefineTest.TwoRank_RefineCollective)

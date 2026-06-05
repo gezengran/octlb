@@ -24,7 +24,7 @@
    - 构造时缓存 `level → [OctantId]`；`advance_one()` 实现 PRD 递归下降（collide → halo → stream → half-time prolong → 细子步 ×2 → full-time prolong → restrict）。  
    - 测试用 collide/stream **调用计数 hook**（或等价可观测接口），供 `test_time_loop_levels` 验证 1:2:4 步数比。
 
-本任务**不**实现 Bouzidi 域边界（T07）、VTK / STL（T07）、`unit_converter`（留到 `cavity3d` 集成）、动态 AMR 热路径（仅预留 rebuild 契约）。
+本任务**不**实现 Bouzidi（T09）、VTK（T08）、Mesh 几何链（T07）、`unit_converter`（留到集成 T10+）、动态 AMR 热路径（仅预留 rebuild 契约）。
 
 ---
 
@@ -239,7 +239,10 @@ T02（FacePairList）— 本任务扩展 comm_tags[4]
 T04（BlockLattice + BGK）— 已完成
 T05（GhostSchedule + FaceIterator）— 已完成
 └── T06（本任务）
-    └── T07 · VTK Writer + STL Reader + Bouzidi BC（可与 T06 部分并行，集成依赖 T06）
+    └── T07 · STL + GeometryEngine + MaterialField（见 `T07-geometry-mesh.md`）
+        ├── T08 · vtk_writer
+        ├── T09 · Bouzidi + Lattice 材料初始化（阻塞于 T07）
+        └── T10+ · cavity/cylinder 集成
 ```
 
 ---

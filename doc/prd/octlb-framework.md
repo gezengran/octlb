@@ -98,7 +98,7 @@ OctLB/
 │           ├── dynamics/     # BGK/MRT/Smagorinsky kernel、平衡态、矩计算，~12 个头文件
 │           ├── core/         # MinimalCell concept、FieldD、Vector，~5 个头文件
 │           ├── utilities/    # 数学工具（vectorHelpers 等），~5 个头文件
-│           └── boundary/     # Bouzidi/bounce-back 算法头文件（T07 启用）
+│           └── boundary/     # Bouzidi/bounce-back 算法头文件（T09 启用）
 │
 ├── examples/
 │   ├── cavity3d/         # 初期验证：无 STL，无 AMR，Lid-driven cavity
@@ -170,10 +170,28 @@ struct BoundingBox {
   - 粗细面识别依据：face callback 中 `is_hanging == 1` 的一侧为 4 个细格，`is_hanging == 0` 的一侧为 1 个粗格；**不**进入 `SameLevelFaces`。
 - 静态分层下初始化一次，预留 `rebuild()` 接口供动态 AMR 扩展；`rebuild()` 后须重建 `GhostSchedule`、`LevelCoupler`（及 `TimeLoop` 层缓存）；通信计划与 tag 绑定拓扑。
 
-#### GeometryEngine / MaterialField
+#### GeometryEngine / MaterialField（T07）
 
-- 读入 STL，用 CGAL 体素化产生每个 octant 块内 N³ 格的 material 编号（fluid / solid / boundary）。
-- 产生结果存储在 `MaterialField`（Mesh 模块持有），Solver 模块在初始化时**单次读取**，之后不再持有引用。
+**输入与多部件**
+
+- `stl_reader`：ASCII/binary STL → `TriangleSoup`（移植 OpenLB；见 `mesh/io/stl_reader/`）。
+- `GeometryAssembly`：一个或多个 `GeometryPart`（每个 part 一份 soup 或 STL 路径），**不**固定为两个文件。风洞典型配置：洞壁 STL → `kInternalChannel`；试验件 STL → `kExternalObstacle`（更高 `priority` 覆盖洞内流体区）。
+- `GeometryPartRole`：
+  - `kExternalObstacle`：实心闭体（如 cylinder、试验件）；STL **内** → solid，**外** → fluid。
+  - `kInternalChannel`：第一版仅 **闭壳墙材**（watertight）；CGAL **inside** → solid（墙），**outside** → fluid（洞腔/管腔）。不支持「流体域 STL」（`kFluidLumenVolume`，P2）。
+
+**几何自适应加密（静态 AMR，T07）**
+
+- 参考 octree-mesh `GeometryAdaptiveEngine`：`ResolveBounding`（扩展包围盒 + wake）+ `ResolveSurface`（多轮表面相交 → `OctreeForest::refine`），每轮 `balance()`，表面附近密、远场疏；加密判据为 **全部 part 三角面并集**。
+- 完成后 `partition(make_level_weight_fn(forest))`。
+- `GeometryEngine::build(forest, assembly, config)` 修改 forest 并产出 `MaterialField`；**不**在 `build()` 内构造 `FacePairList`。调用方须在 `build()` 后重建 `FacePairList`、`GhostSchedule`、`LevelCoupler`（及 `TimeLoop` 层缓存，同 T06）。
+
+**体素化与材料**
+
+- CGAL 体素化（裁剪 octree-mesh `voxelization` 思路）：每 octant 块内 N³ 格 `MaterialKind`：`fluid` / `solid` / `boundary`。
+- `boundary`：与三角网格 **表面相交** 的格（同 octree-mesh `CellVoxelizer`）；**不**预计算 Bouzidi 距离/法向（T09）。
+- 分 part 标量场后按 `priority` 合并；冲突 **solid > boundary > fluid**。
+- `MaterialField` 仅存本地 `OctantId` 对应块；Solver 初始化时**单次读取**，之后不再持有引用。
 
 #### WeightedLoadBalancer
 
@@ -223,7 +241,7 @@ struct BoundingBox {
 - `BlockLattice::collide(omega)` 内部遍历所有非 ghost 格，调用 `olb::collision::BGK::type::apply(cell, params)`——OpenLB 的纯函数模板，只依赖 `concepts::MinimalCell`。
 - `BlockLattice::pack_face` / `unpack_face`（T05）：满足 `FacePackable`，供 `GhostSchedule` 与测试使用。
 - `BlockLattice::stream()` 使用 pull-scheme，读取已由 `GhostSchedule` 刷新的 ghost 层（`collide` 之后、`stream` 之前调用 `exchange()`）。
-- 初始化时按 `MaterialField` 设置每格 omega（fluid）或标记为 solid/boundary（T07 实现 Bouzidi）。
+- 初始化时按 `MaterialField` 设置每格 omega（fluid）或标记为 solid/boundary（T09 实现 Bouzidi，依赖 T07 `MaterialField`）。
 - `BlockCollection<BlockLattice>` 从 T03 泛型工厂直接复用，无需修改。
 
 **HaloExchange**
@@ -320,7 +338,7 @@ defined" 规则），唯一解是引用 `olb3D.h + olb3D.hh` umbrella，导致�
 | `lbm/dynamics/` | OpenLB | BGK/MRT/Smagorinsky kernel、平衡态、矩计算 | ~12 |
 | `lbm/core/` | OpenLB | MinimalCell concept、FieldD、Vector 类型 | ~5 |
 | `lbm/utilities/` | OpenLB | 数学工具（vectorHelpers、normSqr 等） | ~5 |
-| `lbm/boundary/` | OpenLB | Bouzidi/bounce-back 算法头（T07 启用） | ~3 |
+| `lbm/boundary/` | OpenLB | Bouzidi/bounce-back 算法头（T09 启用） | ~3 |
 
 > **T06 Lagrava**：不复制 `refinement/`；`LevelCoupler` 按 PRD 公式实现，复用已移植的 `dynamics/lbm.h`（`computeRhoU`、`computeFneq`、`equilibrium`）。
 
@@ -346,7 +364,7 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 - **不修改 OpenLB 头文件**：只复制，不改写，保持与上游的 diff 可追踪性。
 - **版本基准**：OpenLB 1.9.0 的算法头；后续升级只需 diff 对应的 ~25 个头文件。
 - **GPU**：不定义 `PLATFORM_GPU_CUDA` / `PLATFORM_GPU_HIP`，预留 DESCRIPTOR 模板参数。
-- **IO 模块归属**：`solver/io/vtk_writer/` 和 `solver/io/gnuplot/` 不依赖 LBM 头文件（T07 实现）。
+- **IO 模块归属**：`solver/io/vtk_writer/` 和 `solver/io/gnuplot/` 不依赖 LBM 头文件（T08 实现）。
 
 ---
 
@@ -364,7 +382,8 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 |---|---|---|---|
 | 0 | `test_octree_forest` | OctreeForest refine/balance/partition 在单位立方体上的基本正确性；验证 `local_octants()`、`quadrant_bounds()`、`quadrant_level()` | Mesh/forest |
 | 1 | `test_stl_reader` | ASCII/binary STL 解析：三角面片数、法向量方向、包围盒正确性 | Mesh/io |
-| 2 | `test_geometry_engine` | 硬编码 triangle soup（立方体）输入，CGAL 体素化产出正确 fluid/solid/boundary 标签；不依赖文件 I/O | Mesh/geometry |
+| 2a | `test_geometry_adaptive_refine` | 硬编码 triangle soup + `OctreeForest`：表面附近叶层 `quadrant_level` 高于远场；可选 2-rank 集体 refine 不死锁 | Mesh/geometry |
+| 2 | `test_geometry_engine` | 多场景 triangle soup（外流实心、内流方管、风洞 channel+obstacle 等）：`MaterialKind` 分布正确；非法洞壁 fixture 失败；不依赖大 STL 文件 | Mesh/geometry |
 | 3 | `test_face_pair_list` | p8est_iterate face callback 正确识别同级面和粗细 hanging 面 | Mesh/topology |
 | 4 | `test_load_balancer` | 2^level 权重分区后各 rank 总权重差异 < 5% | Mesh |
 | 5 | `test_ghost_topology` | FacePairList 中每条跨 rank 面对的 remote_rank 与 p4est ghost 层记录一致（本地校验）；精心细化模式确保 hanging 面和跨 rank 面必然出现 | Mesh |
@@ -378,7 +397,9 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 | 13 | `test_cylinder3d_parallel` | 多 rank（≥4），cylinder3d L=4，阻力系数 Cd 与 OpenLB 参考值误差 < 1% | Integration |
 | 14 | `test_amr_convergence` | L=1→3 逐级细化，速度场 L2 误差收敛阶 ≈ 2 | Integration |
 
-**依赖链**：0 → 3 → 5 → 8 → 9 → 10；1 → 2；6 → 8；7 → 9；0–11 全绿后进入 Integration。
+**依赖链**：0 → 3 → 5 → 8 → 9 → 10；0 → 2a；1 → 2a；2a → 2；1 → 2；6 → 8；7 → 9；0–11 全绿后进入 Integration。
+
+**任务拆分（`doc/tasks/`，与测试序对照）**：T07 Mesh 几何链（#1、#2a、#2）→ T08 `vtk_writer`（#11）→ T09 Bouzidi + Lattice 材料初始化 → T10+ 集成算例（#12–#14）。T08 可与 T07 部分并行；T09 阻塞于 T07。
 
 **测试基础设施**：GTest + MPI。
 - `tests/mpi_main.cpp`：手写 `MPI_Init → RUN_ALL_TESTS → MPI_Finalize`，所有 MPI 测试 target 链接此 main 而非 `GTest::gtest_main`。
@@ -393,7 +414,8 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 - **GPU backend**：OpenLB 的 `Platform::GPU_CUDA` / `GPU_HIP`。预留 `Platform` 模板参数，不测试。
 - **HDF5 checkpoint/restart**：预留 `io/checkpoint/` 目录，不实现。
 - **FVM 或其他物理模型**：`field/` 子层设计为可复用，但第一版只跑 LBM。
-- **自适应细化判据**：如 Q-criterion、速度梯度触发。静态分层由几何体素化决定。
+- **流场触发的自适应细化**：如 Q-criterion、速度梯度触发（第一版静态分层由 **几何表面** 驱动，见 T07 `GeometryEngine`）。
+- **流体域 STL / 非闭壳薄壳洞壁**：T07 仅支持闭壳墙材 `kInternalChannel`；`kFluidLumenVolume`、通用 CSG 为 P2。
 - **多相流、热 LBM 等扩展物理模型**：第一版只验证单相不可压 NS。
 
 ---
@@ -407,7 +429,7 @@ OctLB 是对 octree-mesh 的**重新设计**，不是直接扩展。以下 octre
 | octree-mesh 组件 | OctLB 对应 | 处理方式 |
 |---|---|---|
 | `OctreeMesh` + p4est 封装 | `OctreeForest` | 参考重写，正确使用 `p8est_iterate` face callback |
-| `GeometryAdaptiveEngine` + CGAL | `GeometryEngine` | 参考复用 CGAL 体素化逻辑 |
+| `GeometryAdaptiveEngine` + CGAL | `GeometryEngine`（T07） | 参考复用自适应加密 + CGAL 体素化；多 STL 用 `GeometryAssembly` Part 角色 |
 | `MBArray` / `BlockField` | `BlockCollection<octlb::BlockLattice>` | 废弃，换 OctLB 自建格子存储 |
 | `LbmSolver::ExchangeGhostFDistributions` | `GhostSchedule<f_distribution>` | 废弃，重写为面层 MPI |
 | `AMRInterpolator` | `LevelCoupler`（Lagrava） | 废弃，换守恒插值 |
@@ -435,8 +457,8 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 | 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
 |---|---|---|---|---|
 | OctreeForest | `mesh/forest/` | 测试绿 | `test_octree_forest` | T01；CI main 已通过 |
-| stl_reader | `mesh/io/stl_reader/` | 未开始 | `test_stl_reader` | 移植自 OpenLB |
-| GeometryEngine + MaterialField | `mesh/geometry/` | 未开始 | `test_geometry_engine` | CGAL 体素化；参考 GeometryAdaptiveEngine |
+| stl_reader | `mesh/io/stl_reader/` | 未开始 | `test_stl_reader` | T07 W1；移植自 OpenLB |
+| GeometryEngine + MaterialField | `mesh/geometry/` | 未开始 | `test_geometry_engine`、`test_geometry_adaptive_refine` | T07；自适应加密 + Part 合并 + CGAL 体素化 |
 | FacePairList | `mesh/topology/` | 测试绿 | `test_face_pair_list` | T02；T05 `SameLevelFace::comm_tag`；T06 `CoarseFineFace::comm_tags[4]` + `coarse_remote_rank` |
 | WeightedLoadBalancer | `mesh/load_balance/` | 测试绿 | `test_load_balancer` | T02；本地 4-rank 通过，待 CI |
 | Ghost 拓扑一致性 | `mesh/topology/` | 测试绿 | `test_ghost_topology` | T02；本地 4-rank 通过，待 CI |
@@ -456,7 +478,7 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 |---|---|---|---|---|
 | `octlb::BlockLattice` + BGK | `solver/lbm/block_lattice.*` | 测试绿 | `test_collision_bgk` | T04 已落地并通过本地 ctest 验证 |
 | MRT / Smagorinsky Dynamics | `solver/lbm/dynamics/` | 未开始 | — | 复用 OpenLB 算法头文件，集成测试间接覆盖 |
-| Bouzidi BC | `solver/lbm/boundary/` | 未开始 | — | 复用 OpenLB boundary/ 算法头文件（T07） |
+| Bouzidi BC | `solver/lbm/boundary/` | 未开始 | — | T09；复用 OpenLB boundary/；依赖 T07 `MaterialField` |
 | LevelCoupler（Lagrava） | `solver/lbm/level_coupler.*` | 测试绿 | `test_lagrava_coupler`、`test_lagrava_coupler_mpi2` | T06；算法复用 dynamics/，Solver 侧 coupling_plan_ |
 | TimeLoop（递归下降） | `solver/lbm/time_loop/` | 测试绿 | `test_time_loop_levels` | T06；外部引用 GhostSchedule/LevelCoupler；v1 每步全局 `GhostSchedule::exchange()` |
 | CoarseFineFace `comm_tags[4]` | `mesh/topology/` | 测试绿 | `test_face_pair_list`、`test_lagrava_coupler_mpi2` | T06 扩展 T02 |
@@ -466,7 +488,7 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 
 | 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
 |---|---|---|---|---|
-| vtk_writer | `solver/io/vtk_writer/` | 未开始 | `test_vtk_writer` | 移植 blockVtkWriter3D，替换驱动层 |
+| vtk_writer | `solver/io/vtk_writer/` | 未开始 | `test_vtk_writer` | T08；移植 blockVtkWriter3D，替换驱动层 |
 | gnuplot | `solver/io/gnuplot/` | 未开始 | — | 直接复制自 OpenLB |
 
 ### 集成测试

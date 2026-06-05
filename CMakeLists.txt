@@ -19,6 +19,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(MPI REQUIRED)
 find_package(GTest REQUIRED)
 find_package(P4est REQUIRED)
+find_package(CGAL REQUIRED)
 
 enable_testing()
 
