@@ -158,7 +158,7 @@ T02（已完成）
         └── T06 · LevelCoupler + TimeLoop（依赖 T04 + T05）
 ```
 
-T07（stl_reader + GeometryEngine + VTK Writer）与 T03–T06 可并行推进，
+T07（Mesh 几何链，见 `T07-geometry-mesh.md`）与 T03–T06 可并行推进；T08 VTK 可与 T07 W1 并行。
 仅需在集成测试前完成。
 
 ---

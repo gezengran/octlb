@@ -1,0 +1,6 @@
+#ifndef OCTLB_SRC_MESH_GEOMETRY_GEOMETRY_ASSEMBLY_H_
+#define OCTLB_SRC_MESH_GEOMETRY_GEOMETRY_ASSEMBLY_H_
+
+#include "src/mesh/geometry/geometry_types.h"
+
+#endif  // OCTLB_SRC_MESH_GEOMETRY_GEOMETRY_ASSEMBLY_H_
