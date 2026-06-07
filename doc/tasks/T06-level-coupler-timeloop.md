@@ -240,7 +240,7 @@ T04（BlockLattice + BGK）— 已完成
 T05（GhostSchedule + FaceIterator）— 已完成
 └── T06（本任务）
     └── T07 · STL + GeometryEngine + MaterialField（见 `T07-geometry-mesh.md`）
-        ├── T08 · vtk_writer
+        ├── T08 · vtk_writer（见 `T08-vtk-writer.md`）
         ├── T09 · Bouzidi + Lattice 材料初始化（阻塞于 T07）
         └── T10+ · cavity/cylinder 集成
 ```

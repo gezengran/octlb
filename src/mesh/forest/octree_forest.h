@@ -15,7 +15,10 @@ namespace octlb {
 class OctreeForest {
   friend struct MeshForestAccess;
  public:
-  OctreeForest(MPI_Comm comm, BoundingBox domain);
+  /** Default: single root octant (\c unitcube). Pass \a bricks_* > 1 for a brick
+   *  grid of root trees (e.g. \c 2,1,1 → two x-split octants on one rank). */
+  OctreeForest(MPI_Comm comm, BoundingBox domain, int bricks_x = 1, int bricks_y = 1,
+               int bricks_z = 1);
   ~OctreeForest();
 
   OctreeForest(const OctreeForest&) = delete;

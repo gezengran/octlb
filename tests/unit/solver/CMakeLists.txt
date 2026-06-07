@@ -119,3 +119,39 @@ add_test(NAME test_time_loop_levels
     --oversubscribe
     $<TARGET_FILE:test_time_loop_levels>
 )
+
+add_executable(test_vtk_writer
+  test_vtk_writer.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
+
+target_compile_features(test_vtk_writer PRIVATE cxx_std_20)
+
+target_include_directories(test_vtk_writer
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(test_vtk_writer
+  PRIVATE
+    octlb_io
+    GTest::gtest
+    MPI::MPI_CXX
+)
+
+add_test(NAME test_vtk_writer
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 1
+    --oversubscribe
+    $<TARGET_FILE:test_vtk_writer>
+)
+
+add_test(NAME test_vtk_writer_two_rank
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 2
+    --oversubscribe
+    $<TARGET_FILE:test_vtk_writer>
+    --gtest_filter=VtkWriter.TwoRank_VtmListsAllBlocks
+)

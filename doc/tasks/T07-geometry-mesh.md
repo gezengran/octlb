@@ -3,7 +3,7 @@
 > 类型：AFK  
 > 阻塞于：T01（OctreeForest）、T02（FacePairList，仅 P1 冒烟）  
 > 对应 PRD：`octlb/doc/prd/octlb-framework.md`（Mesh 模块，测试顺序 #1、#2a、#2；用户故事 #1）  
-> 状态：**开发中**（W1–W4 代码与 #1/#2/#2a 单测已落地；待本地全量 ctest 确认）
+> 状态：**完成（测试绿）**
 
 ---
 
@@ -206,14 +206,14 @@ T07 **不**实现 `FacePairList::rebuild` 新逻辑，仅消费 T02 已有 API�
 
 ## 验收标准
 
-- [ ] `cmake --build build -j4` 通过（`module load octlb` 含 CGAL）
-- [ ] `test_stl_reader` **全部**通过（PRD #1）
-- [ ] `test_geometry_adaptive_refine` **至少**表面加密用例通过（PRD #2a）
-- [ ] `test_geometry_engine` S1、S3、S5 **通过**；S7 非法洞壁 **失败符合预期**
-- [ ] T01–T06 相关 ctest **仍绿**
-- [ ] `GeometryEngine::build` **不**链接/构造 `FacePairList`；文档与注释含 rebuild 契约
-- [ ] Mesh 几何代码 **不** include OpenLB LBM / `BlockLattice` 头文件
-- [ ] **不**在 T07 写入 Bouzidi 距离/法向
+- [x] `cmake --build build -j4` 通过（`module load octlb` 含 CGAL）
+- [x] `test_stl_reader` **全部**通过（PRD #1）
+- [x] `test_geometry_adaptive_refine` **至少**表面加密用例通过（PRD #2a）；含 `test_geometry_adaptive_refine_two_rank`
+- [x] `test_geometry_engine` S1、S3、S5 **通过**；S7 非法洞壁 **失败符合预期**
+- [x] T01–T06 相关 ctest **仍绿**
+- [x] `GeometryEngine::build` **不**链接/构造 `FacePairList`；文档与注释含 rebuild 契约
+- [x] Mesh 几何代码 **不** include OpenLB LBM / `BlockLattice` 头文件
+- [x] **不**在 T07 写入 Bouzidi 距离/法向
 
 ---
 
@@ -221,9 +221,9 @@ T07 **不**实现 `FacePairList::rebuild` 新逻辑，仅消费 T02 已有 API�
 
 ```
 T01（OctreeForest）— 已完成
-T02（FacePairList）— 已完成；T07 P1 仅冒烟
-└── T07（本任务）· Mesh 几何链
-    ├── T08 · vtk_writer（#11；可与 T07 W1 并行）
+T02（FacePairList）— 已完成
+└── T07（本任务）· Mesh 几何链 — 测试绿
+    ├── T08 · vtk_writer（#11；见 T08-vtk-writer.md；与 T07 无硬阻塞）
     ├── T09 · Bouzidi + BlockLattice 材料初始化（阻塞于 T07）
     └── T10+ · unit_converter + cavity/cylinder 集成（#12–#14；阻塞于 #0–#11 全绿）
 ```
