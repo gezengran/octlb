@@ -84,7 +84,7 @@ OctLB/
 │       │   └── face_iterator.h       # T05；CoarseFineFaces 遍历
 │       │
 │       ├── io/           ← Solver 模块内共用 IO（不依赖 LBM 头文件）
-│       │   ├── vtk_writer/   # 移植 blockVtkWriter3D，替换驱动层
+│       │   ├── vtk_writer/   # StructuredGrid .vts + vtm/pvd（T08）；不复制 OpenLB ImageData 路径
 │       │   └── gnuplot/      # 直接复制自 OpenLB
 │       │
 │       └── lbm/          ← LBM 专属；算法复用策略（见"OpenLB 代码融入策略"）
@@ -292,12 +292,13 @@ advance(level l):
   之后每步直接按层索引，不再查询 OctreeForest。BlockCollection 和 BlockIterator 本身对 level 无感知。
 - **测试 hook**：各层 `collide`/`stream` 调用计数（或等价可观测接口），供 `test_time_loop_levels` 验证 L=3 时步数比 1:2:4。
 
-**VTK Writer（IO）**
+**VTK Writer（IO，T08）**
 
-- 驱动层：`BlockStore` 中所有 `octant_id` 的遍历，替代 OpenLB 的 `CuboidDecomposition` 循环。
-- 每个块输出一个 `.vts` 文件，空间范围和 `deltaX` 从 `OctreeForest::quadrant_bounds(octant_id)` 与 N 计算得到。
-- Rank 0 汇总写 `.vtm`（MultiBlock 索引）和 `.pvd`（时间序列索引）。
-- 支持输出字段：速度（u）、压力（p）、密度（ρ），可扩展。
+- **格式**：`VTKFile type="StructuredGrid"`，每 octant 一个 **`.vts`**；rank 0 写 **`.vtm`**（多块索引）与 **`.pvd`**（时间序列）。**不**使用 OpenLB `blockVtkWriter3D` 的 `ImageData`（`.vti`）路径。
+- **驱动层**：`BlockIterator` 遍历本 rank 全部 `octant_id`，替代 OpenLB `CuboidDecomposition` / `SuperF3D` 循环。
+- **几何**：块内 `N×N×N` LBM cell → `(N+1)³` 角点 `Points` + `N³` hexahedron；角点由 `OctreeForest::quadrant_bounds(octant_id)` 线性插值（`x(i)=x_min+(x_max-x_min)*i/N` 等）；`WholeExtent` 点索引为 `0 N  0 N  0 N`。
+- **字段**：写在 **`CellData`**（cell-centered，仅 interior `0…N-1`，不含 ghost halo）。io 层定义 **`VtkCellField3D` concept**（`vtk_name`、`vtk_components`、`sample_cell`）；单块 `.vts` 可含多个数组（如 velocity、pressure、density）。`solver/io/vtk_writer/` **不** include LBM 头文件；`BlockLattice` 适配在 `solver/lbm/`（T08 W4，供 T10+）。
+- **并行**：各 rank 写本地 `.vts`（命名 `{base}_r{rank}_oct{local_id}_T{iT:05d}.vts`，避免 partition 后本地 `OctantId` 重复）；rank 0 通过 MPI 收集文件名列表写当步 `.vtm` 并追加 `.pvd`（编排参考 OpenLB `SuperVTMwriter3D`，不引入其 cuboid 依赖）。
 
 ---
 
@@ -364,7 +365,7 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 - **不修改 OpenLB 头文件**：只复制，不改写，保持与上游的 diff 可追踪性。
 - **版本基准**：OpenLB 1.9.0 的算法头；后续升级只需 diff 对应的 ~25 个头文件。
 - **GPU**：不定义 `PLATFORM_GPU_CUDA` / `PLATFORM_GPU_HIP`，预留 DESCRIPTOR 模板参数。
-- **IO 模块归属**：`solver/io/vtk_writer/` 和 `solver/io/gnuplot/` 不依赖 LBM 头文件（T08 实现）。
+- **IO 模块归属**：`solver/io/vtk_writer/` 不依赖 LBM 头文件（**T08**）；`solver/io/gnuplot/` 不依赖 LBM，单独后续任务（非 T08 范围）。
 
 ---
 
@@ -392,14 +393,14 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 | 8 | `test_ghost_schedule` | L1：`DummyBlock` 覆盖同 rank / 跨 rank / 空计划 / 混合面 / 角点 / `comm_tag`；L2：2-rank `BlockLattice` 邻接面 populations 一致 | Solver/field |
 | 9 | `test_lagrava_coupler` | L1：`coupling_plan_` 条数/索引/象限；L2：同 rank 1 粗+1 细界面 ρ/u 连续、质量守恒；L3：2-rank 跨 rank macro 交换 | Solver/lbm |
 | 10 | `test_time_loop_levels` | L1：L=3 一次 `advance_one()` 后各层 collide 计数 1:2:4、coupler 调用顺序；P1：真实 BlockLattice 不崩溃 | Solver/lbm |
-| 11 | `test_vtk_writer` | 硬编码 `BlockCollection` 输入，输出合法 VTK XML，空间范围与 `quadrant_bounds` 吻合 | Solver/io |
+| 11 | `test_vtk_writer` | 硬编码 `BlockCollection` + `DummyCellField`：输出合法 StructuredGrid `.vts`（CellData、`(N+1)³` 角点），空间范围与 `quadrant_bounds` 吻合；W3 后补 2-rank `.vtm`/`.pvd` P1 | Solver/io |
 | 12 | `test_cavity3d_serial` | 单 rank，cavity3d，Re=100，中线速度剖面与 Ghia 1982 参考值误差 < 2% | Integration |
 | 13 | `test_cylinder3d_parallel` | 多 rank（≥4），cylinder3d L=4，阻力系数 Cd 与 OpenLB 参考值误差 < 1% | Integration |
 | 14 | `test_amr_convergence` | L=1→3 逐级细化，速度场 L2 误差收敛阶 ≈ 2 | Integration |
 
 **依赖链**：0 → 3 → 5 → 8 → 9 → 10；0 → 2a；1 → 2a；2a → 2；1 → 2；6 → 8；7 → 9；0–11 全绿后进入 Integration。
 
-**任务拆分（`doc/tasks/`，与测试序对照）**：T07 Mesh 几何链（#1、#2a、#2）→ T08 `vtk_writer`（#11）→ T09 Bouzidi + Lattice 材料初始化 → T10+ 集成算例（#12–#14）。T08 可与 T07 部分并行；T09 阻塞于 T07。
+**任务拆分（`doc/tasks/`，与测试序对照）**：T07 Mesh 几何链（#1、#2a、#2，**测试绿**）→ T08 `vtk_writer`（#11，W1–W4，见 `T08-vtk-writer.md`）→ T09 Bouzidi + Lattice 材料初始化 → T10+ 集成算例（#12–#14）。T08 与 T07 无硬阻塞；T09 阻塞于 T07。
 
 **测试基础设施**：GTest + MPI。
 - `tests/mpi_main.cpp`：手写 `MPI_Init → RUN_ALL_TESTS → MPI_Finalize`，所有 MPI 测试 target 链接此 main 而非 `GTest::gtest_main`。
@@ -457,8 +458,8 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 | 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
 |---|---|---|---|---|
 | OctreeForest | `mesh/forest/` | 测试绿 | `test_octree_forest` | T01；CI main 已通过 |
-| stl_reader | `mesh/io/stl_reader/` | 未开始 | `test_stl_reader` | T07 W1；移植自 OpenLB |
-| GeometryEngine + MaterialField | `mesh/geometry/` | 未开始 | `test_geometry_engine`、`test_geometry_adaptive_refine` | T07；自适应加密 + Part 合并 + CGAL 体素化 |
+| stl_reader | `mesh/io/stl_reader/` | 测试绿 | `test_stl_reader` | T07 W1；移植自 OpenLB |
+| GeometryEngine + MaterialField | `mesh/geometry/` | 测试绿 | `test_geometry_engine`、`test_geometry_adaptive_refine` | T07；自适应加密 + Part 合并 + CGAL 体素化 |
 | FacePairList | `mesh/topology/` | 测试绿 | `test_face_pair_list` | T02；T05 `SameLevelFace::comm_tag`；T06 `CoarseFineFace::comm_tags[4]` + `coarse_remote_rank` |
 | WeightedLoadBalancer | `mesh/load_balance/` | 测试绿 | `test_load_balancer` | T02；本地 4-rank 通过，待 CI |
 | Ghost 拓扑一致性 | `mesh/topology/` | 测试绿 | `test_ghost_topology` | T02；本地 4-rank 通过，待 CI |
@@ -488,7 +489,7 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 
 | 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
 |---|---|---|---|---|
-| vtk_writer | `solver/io/vtk_writer/` | 未开始 | `test_vtk_writer` | T08；移植 blockVtkWriter3D，替换驱动层 |
+| vtk_writer | `solver/io/vtk_writer/` | 测试绿 | `test_vtk_writer`、`test_vtk_writer_two_rank` | T08；StructuredGrid `.vts` + CellData + `VtkCellField3D` + 并行 `.vtm`/`.pvd`；见 `doc/tasks/T08-vtk-writer.md` |
 | gnuplot | `solver/io/gnuplot/` | 未开始 | — | 直接复制自 OpenLB |
 
 ### 集成测试

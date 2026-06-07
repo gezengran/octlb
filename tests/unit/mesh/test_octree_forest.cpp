@@ -123,6 +123,32 @@ void GatherGlobalOctants(const OctreeForest& forest, MPI_Comm comm,
 
 }  // namespace
 
+TEST(OctreeForest, Brick2x1x1_HasTwoRootOctantsSplitAlongX) {
+  OctreeForest forest(MPI_COMM_WORLD, UnitCubeDomain(), 2, 1, 1);
+  const label global_n =
+      GlobalSum(forest.local_num_octants(), MPI_COMM_WORLD);
+  EXPECT_EQ(global_n, 2);
+
+  std::vector<GlobalOctant> octants;
+  GatherGlobalOctants(forest, MPI_COMM_WORLD, &octants);
+  ASSERT_EQ(octants.size(), 2u);
+
+  scalar x_min = octants[0].bounds.x_min;
+  scalar x_max = octants[0].bounds.x_max;
+  for (const GlobalOctant& o : octants) {
+    EXPECT_NEAR(o.bounds.y_min, 0.0, 1e-12);
+    EXPECT_NEAR(o.bounds.y_max, 1.0, 1e-12);
+    EXPECT_NEAR(o.bounds.z_min, 0.0, 1e-12);
+    EXPECT_NEAR(o.bounds.z_max, 1.0, 1e-12);
+    EXPECT_EQ(o.level, 0);
+    EXPECT_NEAR(o.bounds.x_max - o.bounds.x_min, 0.5, 1e-12);
+    x_min = std::min(x_min, o.bounds.x_min);
+    x_max = std::max(x_max, o.bounds.x_max);
+  }
+  EXPECT_NEAR(x_min, 0.0, 1e-12);
+  EXPECT_NEAR(x_max, 1.0, 1e-12);
+}
+
 TEST(OctreeForest, UniformRefineTwoLevelsYields64OctantsGlobally) {
   OctreeForest forest(MPI_COMM_WORLD, UnitCubeDomain());
   forest.refine([](OctantId) { return true; }, 2);
