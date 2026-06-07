@@ -26,7 +26,7 @@ doc/
 
 | 文件 | 说明 |
 |------|------|
-| [prd/octlb-framework.md](prd/octlb-framework.md) | OctLB 框架总 PRD（v0.1 草稿） |
+| [prd/octlb-framework.md](prd/octlb-framework.md) | OctLB 框架总 PRD（v0.2；含 T09 进度） |
 
 **后续可增示例**
 

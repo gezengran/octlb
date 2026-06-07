@@ -79,6 +79,48 @@ TEST(FacePairList, CenterRefineProducesCoarseFineFacesWithFourFines) {
   }
 }
 
+TEST(FacePairList, TreeBoundaryFaces_Enumerated) {
+  int size = 0;
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  if (size != 1) {
+    GTEST_SKIP() << "single-rank test";
+  }
+
+  OctreeForest forest(MPI_COMM_WORLD, UnitCubeDomain());
+  forest.partition();
+
+  const FacePairList pairs(forest);
+  const auto& tb = pairs.tree_boundary_faces();
+  EXPECT_EQ(tb.size(), 6u);
+  for (const TreeBoundaryFace& face : tb) {
+    EXPECT_EQ(face.octant_id, 0);
+    EXPECT_GE(static_cast<int>(face.face_dir), 0);
+    EXPECT_LE(static_cast<int>(face.face_dir), 5);
+  }
+}
+
+TEST(FacePairList, DomainTreeBoundary_NoSameLevelFace) {
+  int size = 0;
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  if (size != 1) {
+    GTEST_SKIP() << "single-rank test";
+  }
+
+  OctreeForest forest(MPI_COMM_WORLD, UnitCubeDomain());
+  forest.partition();
+
+  const FacePairList pairs(forest);
+  const auto& tb = pairs.tree_boundary_faces();
+  ASSERT_EQ(tb.size(), 6u);
+
+  for (const TreeBoundaryFace& face : tb) {
+    for (const SameLevelFace& sl : pairs.same_level_faces()) {
+      EXPECT_FALSE(sl.local_id == face.octant_id &&
+                   sl.dir == face.face_dir);
+    }
+  }
+}
+
 TEST(FacePairList, CrossRankFacesShareSymmetricCommTag) {
   int rank = 0;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);

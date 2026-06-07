@@ -1,7 +1,7 @@
 # OctLB 框架 PRD
 
-> 版本：v0.1  
-> 日期：2026-05-28
+> 版本：v0.2  
+> 日期：2026-05-28（进度更新：2026-06-07）
 
 ---
 
@@ -90,15 +90,19 @@ OctLB/
 │       └── lbm/          ← LBM 专属；算法复用策略（见"OpenLB 代码融入策略"）
 │           │             # ── OctLB 自建区（namespace octlb）──
 │           ├── block_lattice.h/.cpp  # octlb::BlockLattice<T,D>，octant 感知格子数据结构
+│           ├── cell_kind.h           # CellKind（T09-W1）
+│           ├── domain_boundary_handler.*  # 域外 tree BC（T09-W1）
+│           ├── bouzidi_link_data.*   # Bouzidi q_frac 缓存（T09-W2）
+│           ├── lattice_material_init.*  # MaterialField → CellKind（T09-W2）
 │           ├── level_coupler.h/.cpp  # Lagrava 粗细耦合（T06；算法复用 dynamics/）
-│           ├── time_loop/            # 递归下降 TimeLoop（T06）
-│           ├── unit_converter/       # LBM 单位换算（cavity3d 集成阶段）
+│           ├── time_loop/            # 递归下降 TimeLoop（T06；T09-W1 注入 DomainBoundaryHandler）
+│           ├── unit_converter/       # LBM 单位换算（T10 cavity3d）
 │           │             # ── OpenLB 算法头文件（只读，namespace olb，无 .cpp）──
 │           ├── descriptor/   # D3Q19 等格子常数（c/t/invCs2），~10 个头文件
 │           ├── dynamics/     # BGK/MRT/Smagorinsky kernel、平衡态、矩计算，~12 个头文件
 │           ├── core/         # MinimalCell concept、FieldD、Vector，~5 个头文件
 │           ├── utilities/    # 数学工具（vectorHelpers 等），~5 个头文件
-│           └── boundary/     # Bouzidi/bounce-back 算法头文件（T09 启用）
+│           └── boundary/     # bounce-back / Zou-He（T09-W1）；Bouzidi pull（T09-W2）
 │
 ├── examples/
 │   ├── cavity3d/         # 初期验证：无 STL，无 AMR，Lid-driven cavity
@@ -167,8 +171,9 @@ struct BoundingBox {
     - 跨 rank 时 `remote_block_id` 为 p4est ghost 索引，**不是**远端 rank 的 `OctantId`。
   - **CoarseFineFaces**：`{coarse_block_id, fine_block_ids[4], face_normal, remote_ranks[4], comm_tags[4]}`
     - `comm_tags[i]`：在 face callback 内为 coarse 与 `fine_ids[i]` 之间生成的**对称** MPI tag（T06）；跨 rank 时 `LevelCoupler` 交换 coarse 宏观量使用，同 rank 忽略。
+  - **TreeBoundaryFaces**（T09-W1）：`{octant_id, face_dir}`；face callback 中 `tree_boundary != 0` 的域外树界面。**不**进入 `SameLevelFaces` / `CoarseFineFaces`；BC 类型由 example 配置，Mesh 只枚举拓扑。
   - 粗细面识别依据：face callback 中 `is_hanging == 1` 的一侧为 4 个细格，`is_hanging == 0` 的一侧为 1 个粗格；**不**进入 `SameLevelFaces`。
-- 静态分层下初始化一次，预留 `rebuild()` 接口供动态 AMR 扩展；`rebuild()` 后须重建 `GhostSchedule`、`LevelCoupler`（及 `TimeLoop` 层缓存）；通信计划与 tag 绑定拓扑。
+- 静态分层下初始化一次，预留 `rebuild()` 接口供动态 AMR 扩展；`rebuild()` 后须重建 `GhostSchedule`、`LevelCoupler`、`DomainBoundaryHandler`（T09-W1）、`BouzidiLinkData`（T09-W2）及 `TimeLoop` 层缓存；通信计划与 tag 绑定拓扑。
 
 #### GeometryEngine / MaterialField（T07）
 
@@ -238,15 +243,27 @@ struct BoundingBox {
 - 每个 octant 持有一个 `octlb::BlockLattice<T, D3Q19Descriptor>`——OctLB 自建的格子数据结构。
 - 内存布局：`[Nx+2h][Ny+2h][Nz+2h][Q]` 平坦数组，`h=1` ghost halo，Q 在最内层。
 - 块尺寸：`(N+2)³×Q`，halo 宽度 = 1（D3Q19 streaming 只需 1 格 overlap）。
-- `BlockLattice::collide(omega)` 内部遍历所有非 ghost 格，调用 `olb::collision::BGK::type::apply(cell, params)`——OpenLB 的纯函数模板，只依赖 `concepts::MinimalCell`。
+- 每 interior 格持有 **`CellKind`**（T09-W1）：`kFluid` / `kSolid` / `kBoundary`；默认 `kFluid`。`collide()` / `stream()` **跳过** `kSolid` 与 `kBoundary`。
+- `BlockLattice::collide(omega)` 在 `kFluid` 格上调用 `olb::collision::BGK::type::apply(cell, params)`——OpenLB 的纯函数模板，只依赖 `concepts::MinimalCell`。
 - `BlockLattice::pack_face` / `unpack_face`（T05）：满足 `FacePackable`，供 `GhostSchedule` 与测试使用。
-- `BlockLattice::stream()` 使用 pull-scheme，读取已由 `GhostSchedule` 刷新的 ghost 层（`collide` 之后、`stream` 之前调用 `exchange()`）。
-- 初始化时按 `MaterialField` 设置每格 omega（fluid）或标记为 solid/boundary（T09 实现 Bouzidi，依赖 T07 `MaterialField`）。
+- `BlockLattice::stream()` 使用 pull-scheme，读取已由 `GhostSchedule` 刷新的 ghost 层及域边界 BC 写入的 tree ghost（见下）。**T09-W2**：pull 时若源邻居为 `kSolid` / `kBoundary`，用初始化缓存的 `q_frac` 在 `stream()` 内做 Bouzidi（**不**从 solid 格读 population）。
+- **T09-W2**：`initialize_from_material(MaterialField)` 写入 `CellKind` 并为 fluid 格设统一 `omega`；**T09-W1 不**读取 `MaterialField`。
 - `BlockCollection<BlockLattice>` 从 T03 泛型工厂直接复用，无需修改。
+
+**DomainBoundaryHandler（T09-W1）**
+
+- 构造时绑定 `FacePairList::TreeBoundaryFaces` + example 侧 BC 配置（如 `FaceDir → no-slip bounce-back` / `moving_lid` Zou-He）。
+- `apply()` 在 post-collision populations 上写入 **tree 外侧 ghost 层**；**不**处理 STL 曲面（W2 Bouzidi）或同级 halo（T05）。
+- **注入 `TimeLoop`**（外部引用、不持有）：`collide → GhostSchedule::exchange() → domain_bc.apply() → stream()`；单元测试可用 `NoOpDomainBoundaryHandler`。
+
+**BouzidiLinkData（T09-W2，静态 AMR v1）**
+
+- 初始化一次性构建：对每个 **相邻 solid/boundary 的 `kFluid` 格**、每个 cut link 缓存 `q_frac`（沿 lattice 方向到壁面的分数距离）。输入：`MaterialField` + `GeometryAssembly` + `OctreeForest::quadrant_bounds` + 格心物理坐标；**不**回写 `MaterialField`（T07 不预存距离/法向）。
+- 运行时集成在 `BlockLattice::stream()` pull 阶段；**不**再注入 `TimeLoop`。算法核复用 OpenLB / octree-mesh 无状态 Bouzidi 公式。
 
 **HaloExchange**
 
-- 每层时间步：`collide()` → `GhostSchedule::exchange()`（同级面）→ `stream()`。
+- 每层时间步：`collide()` → `GhostSchedule::exchange()`（同级面）→ `DomainBoundaryHandler::apply()`（域外 tree 面，T09-W1）→ `stream()`（含 T09-W2 Bouzidi pull）。
 - 面层数据格式：19 个 double/float 的 N×N slab（单层），对应 f 分布函数分量。
 - 粗细界面不在此路径；由 `LevelCoupler` 在子步间对 `CoarseFineFaces` 做 Lagrava 插值/限制。
 
@@ -272,9 +289,10 @@ struct BoundingBox {
 
 ```
 advance(level l):
-  collide(all blocks at level l)              // BlockLattice::collide()
+  collide(all blocks at level l)              // BlockLattice::collide()，跳过 kSolid/kBoundary
   halo_exchange(level l)                      // GhostSchedule::exchange()，仅 SameLevelFaces
-  stream(all blocks at level l)               // BlockLattice::stream()
+  domain_bc.apply()                           // DomainBoundaryHandler，tree 外 ghost（T09-W1）
+  stream(all blocks at level l)               // BlockLattice::stream()，含 Bouzidi pull（T09-W2）
   coupler.apply_half_time(l → l+1)            // LevelCoupler prolongation half-time
   advance(level l+1)                          // 第一个细子步（递归）
   coupler.apply_full_time(l → l+1)            // LevelCoupler prolongation full-time
@@ -282,10 +300,10 @@ advance(level l):
   coupler.restrict(l+1 → l)                   // LevelCoupler restriction
 ```
 
-- **`TimeLoop` 类 + 外部引用**：构造时注入 `BlockCollection`、`GhostSchedule`、`LevelCoupler`（调用方持有 Schedule/Coupler，便于 `rebuild()` 后整体替换）；`TimeLoop` 不创建或拥有上述对象。
+- **`TimeLoop` 类 + 外部引用**：构造时注入 `BlockCollection`、`GhostSchedule`、`LevelCoupler`、`DomainBoundaryHandler`（调用方持有，便于 `rebuild()` 后整体替换）；`TimeLoop` 不创建或拥有上述对象。
 - **对外 API**：`advance_one()` 从 level 0 递归执行一个粗层时间步；构造时缓存 `level → [OctantId]`。
 - 递归深度 = 细化层数（6-8，最大 10），不会溢出栈。
-- 每层块上顺序为 `collide()` → `GhostSchedule::exchange()` → `stream()` 的并行循环。
+- 每层块上顺序为 `collide()` → `GhostSchedule::exchange()` → `DomainBoundaryHandler::apply()` → `stream()` 的并行循环。
 - 第一版：静态分层，层级结构在初始化时确定。
 - **Level-to-OctantId 映射**：TimeLoop 在初始化时调用 `OctreeForest::quadrant_level(id)`
   遍历所有本地 octant，将 `level → [OctantId]` 映射缓存为 `std::vector<std::vector<OctantId>>`，
@@ -339,7 +357,7 @@ defined" 规则），唯一解是引用 `olb3D.h + olb3D.hh` umbrella，导致�
 | `lbm/dynamics/` | OpenLB | BGK/MRT/Smagorinsky kernel、平衡态、矩计算 | ~12 |
 | `lbm/core/` | OpenLB | MinimalCell concept、FieldD、Vector 类型 | ~5 |
 | `lbm/utilities/` | OpenLB | 数学工具（vectorHelpers、normSqr 等） | ~5 |
-| `lbm/boundary/` | OpenLB | Bouzidi/bounce-back 算法头（T09 启用） | ~3 |
+| `lbm/boundary/` | OctLB 自建 + 参考 OpenLB / octree-mesh | bounce-back、Zou-He、Bouzidi pull 无状态核（T09） | ~3 |
 
 > **T06 Lagrava**：不复制 `refinement/`；`LevelCoupler` 按 PRD 公式实现，复用已移植的 `dynamics/lbm.h`（`computeRhoU`、`computeFneq`、`equilibrium`）。
 
@@ -385,7 +403,7 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 | 1 | `test_stl_reader` | ASCII/binary STL 解析：三角面片数、法向量方向、包围盒正确性 | Mesh/io |
 | 2a | `test_geometry_adaptive_refine` | 硬编码 triangle soup + `OctreeForest`：表面附近叶层 `quadrant_level` 高于远场；可选 2-rank 集体 refine 不死锁 | Mesh/geometry |
 | 2 | `test_geometry_engine` | 多场景 triangle soup（外流实心、内流方管、风洞 channel+obstacle 等）：`MaterialKind` 分布正确；非法洞壁 fixture 失败；不依赖大 STL 文件 | Mesh/geometry |
-| 3 | `test_face_pair_list` | p8est_iterate face callback 正确识别同级面和粗细 hanging 面 | Mesh/topology |
+| 3 | `test_face_pair_list` | p8est_iterate face callback 正确识别同级面、粗细 hanging 面；**T09** 域外 `TreeBoundaryFaces` 枚举且不进 `SameLevelFaces` | Mesh/topology |
 | 4 | `test_load_balancer` | 2^level 权重分区后各 rank 总权重差异 < 5% | Mesh |
 | 5 | `test_ghost_topology` | FacePairList 中每条跨 rank 面对的 remote_rank 与 p4est ghost 层记录一致（本地校验）；精心细化模式确保 hanging 面和跨 rank 面必然出现 | Mesh |
 | 6 | `test_block_collection` | `BlockCollection<T>` 增删查，以 `octant_id` 为键；`BlockIterator` 遍历正确 | Solver/field |
@@ -394,13 +412,28 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 | 9 | `test_lagrava_coupler` | L1：`coupling_plan_` 条数/索引/象限；L2：同 rank 1 粗+1 细界面 ρ/u 连续、质量守恒；L3：2-rank 跨 rank macro 交换 | Solver/lbm |
 | 10 | `test_time_loop_levels` | L1：L=3 一次 `advance_one()` 后各层 collide 计数 1:2:4、coupler 调用顺序；P1：真实 BlockLattice 不崩溃 | Solver/lbm |
 | 11 | `test_vtk_writer` | 硬编码 `BlockCollection` + `DummyCellField`：输出合法 StructuredGrid `.vts`（CellData、`(N+1)³` 角点），空间范围与 `quadrant_bounds` 吻合；W3 后补 2-rank `.vtm`/`.pvd` P1 | Solver/io |
+| 11a | `test_lattice_cell_kind` | `CellKind` 默认全 fluid；`kSolid` 跳过 `collide`；与既有 BGK 行为一致 | Solver/lbm |
+| 11b | `test_domain_boundary` | no-slip tree ghost bounce-back；moving lid Zou-He 宏观速度与配置一致 | Solver/lbm |
+| 11c | `test_bouzidi_link` | `BouzidiLinkData::Build` 缓存 `q_frac`；`stream()` Bouzidi 替代 solid pull；`initialize_from_material` 映射 T07 fixture | Solver/lbm |
 | 12 | `test_cavity3d_serial` | 单 rank，cavity3d，Re=100，中线速度剖面与 Ghia 1982 参考值误差 < 2% | Integration |
 | 13 | `test_cylinder3d_parallel` | 多 rank（≥4），cylinder3d L=4，阻力系数 Cd 与 OpenLB 参考值误差 < 1% | Integration |
 | 14 | `test_amr_convergence` | L=1→3 逐级细化，速度场 L2 误差收敛阶 ≈ 2 | Integration |
 
-**依赖链**：0 → 3 → 5 → 8 → 9 → 10；0 → 2a；1 → 2a；2a → 2；1 → 2；6 → 8；7 → 9；0–11 全绿后进入 Integration。
+**依赖链**：0 → 3 → 5 → 8 → 9 → 10；0 → 2a；1 → 2a；2a → 2；1 → 2；6 → 8；7 → 9；0–11 + **T09（11a–11c）** 全绿后进入 Integration。
 
-**任务拆分（`doc/tasks/`，与测试序对照）**：T07 Mesh 几何链（#1、#2a、#2，**测试绿**）→ T08 `vtk_writer`（#11，W1–W4，见 `T08-vtk-writer.md`）→ T09 Bouzidi + Lattice 材料初始化 → T10+ 集成算例（#12–#14）。T08 与 T07 无硬阻塞；T09 阻塞于 T07。
+**任务拆分（`doc/tasks/`，与测试序对照）**：
+
+| 任务 | 内容 | 阻塞于 | 状态 | 对应测试 / 算例 |
+|------|------|--------|------|-----------------|
+| T07 | Mesh 几何链 | T01、T02 | **测试绿** | #1、#2a、#2 |
+| T08 | `vtk_writer` | T03、T01 | **测试绿** | #11（见 `T08-vtk-writer.md`） |
+| **T09-W1** | 域边界 BC + `CellKind` + `TimeLoop` 注入 | T02、T04、T06 | **测试绿** | #11a、#11b；`test_face_pair_list` 扩展（见 `T09-boundary-bc.md`） |
+| **T09-W2** | Bouzidi + `MaterialField` 初始化 | T09-W1、T07 | **测试绿** | #11c |
+| **T10** | `unit_converter` + `cavity3d` | T09-W1 | 未开始 | #12 |
+| **T11** | `cylinder3d` + 进出口 BC | T09-W2、#12 | 未开始 | #13 |
+| **T12** | AMR 收敛 | T11 | 未开始 | #14 |
+
+T08 与 T07 无硬阻塞；T09-W2 阻塞于 T07；**当前里程碑**：Mesh + Solver 单元测试（含 T09）已绿，下一项为 **T10 cavity3d**。
 
 **测试基础设施**：GTest + MPI。
 - `tests/mpi_main.cpp`：手写 `MPI_Init → RUN_ALL_TESTS → MPI_Finalize`，所有 MPI 测试 target 链接此 main 而非 `GTest::gtest_main`。
@@ -411,7 +444,7 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 
 ## 不在范围内（第一版）
 
-- **动态 AMR**：运行时 refine/coarsen 及字段迁移（`p4est_transfer_fixed`）。预留 `FacePairList::rebuild()` 及 Solver 侧 `GhostSchedule` / `LevelCoupler` / `TimeLoop` 重建契约，第一版不实现热路径。
+- **动态 AMR**：运行时 refine/coarsen 及字段迁移（`p4est_transfer_fixed`）。预留 `FacePairList::rebuild()` 及 Solver 侧 `GhostSchedule` / `LevelCoupler` / `DomainBoundaryHandler` / `BouzidiLinkData` / `TimeLoop` 重建契约，第一版不实现热路径。
 - **GPU backend**：OpenLB 的 `Platform::GPU_CUDA` / `GPU_HIP`。预留 `Platform` 模板参数，不测试。
 - **HDF5 checkpoint/restart**：预留 `io/checkpoint/` 目录，不实现。
 - **FVM 或其他物理模型**：`field/` 子层设计为可复用，但第一版只跑 LBM。
@@ -435,7 +468,7 @@ OctLB 是对 octree-mesh 的**重新设计**，不是直接扩展。以下 octre
 | `LbmSolver::ExchangeGhostFDistributions` | `GhostSchedule<f_distribution>` | 废弃，重写为面层 MPI |
 | `AMRInterpolator` | `LevelCoupler`（Lagrava） | 废弃，换守恒插值 |
 | `MigrationEngine` | 第一版不实现 | 预留接口 |
-| Bouzidi 曲面 BC 逻辑 | OpenLB `boundary/` | 参考，以 OpenLB 为准 |
+| Bouzidi 曲面 BC 逻辑 | `solver/lbm/boundary/`、`bouzidi_link_data.*` | **T09-W2 已实现**（参考 OpenLB / octree-mesh） |
 | `compare_cylinder3d.sh` | `test_cylinder3d_parallel` | 测试用例中复用数据文件和比对脚本 |
 
 ### p4est API 使用规范
@@ -451,7 +484,8 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 
 ## 需求完成情况
 
-> 状态说明：`未开始` / `开发中` / `测试绿` / `完成`
+> 状态说明：`未开始` / `开发中` / `测试绿` / `完成`  
+> **当前进度（2026-06-07）**：T01–T09（W1+W2）单元测试已绿；集成算例（cavity3d / cylinder3d / AMR 收敛）尚未启动（T10–T12）。
 
 ### Mesh 模块
 
@@ -460,7 +494,7 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 | OctreeForest | `mesh/forest/` | 测试绿 | `test_octree_forest` | T01；CI main 已通过 |
 | stl_reader | `mesh/io/stl_reader/` | 测试绿 | `test_stl_reader` | T07 W1；移植自 OpenLB |
 | GeometryEngine + MaterialField | `mesh/geometry/` | 测试绿 | `test_geometry_engine`、`test_geometry_adaptive_refine` | T07；自适应加密 + Part 合并 + CGAL 体素化 |
-| FacePairList | `mesh/topology/` | 测试绿 | `test_face_pair_list` | T02；T05 `SameLevelFace::comm_tag`；T06 `CoarseFineFace::comm_tags[4]` + `coarse_remote_rank` |
+| FacePairList | `mesh/topology/` | 测试绿 | `test_face_pair_list` | T02；T05 `comm_tag`；T06 `comm_tags[4]`；**T09-W1** `TreeBoundaryFaces` 枚举 |
 | WeightedLoadBalancer | `mesh/load_balance/` | 测试绿 | `test_load_balancer` | T02；本地 4-rank 通过，待 CI |
 | Ghost 拓扑一致性 | `mesh/topology/` | 测试绿 | `test_ghost_topology` | T02；本地 4-rank 通过，待 CI |
 
@@ -472,18 +506,20 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 | GhostSchedule\<T\> + FaceIterator | `solver/field/` | 测试绿 | `test_ghost_schedule` | T05；`octlb_field_schedule`；同级面层 MPI |
 | FacePairList `comm_tag` | `mesh/topology/` | 测试绿 | `test_face_pair_list`（扩展） | T05 扩展 T02 |
 | BlockLattice `pack_face` / `unpack_face` | `solver/lbm/` | 测试绿 | `test_ghost_schedule` L2 | T05 |
+| `CellKind` + `populations_at_halo` | `solver/lbm/cell_kind.h`、`block_lattice.*` | 测试绿 | `test_lattice_cell_kind` | T09-W1；solid/boundary 跳过 collide/stream |
 
 ### Solver/lbm 模块
 
 | 组件 | 所在路径 | 状态 | 对应测试 | 备注 |
 |---|---|---|---|---|
-| `octlb::BlockLattice` + BGK | `solver/lbm/block_lattice.*` | 测试绿 | `test_collision_bgk` | T04 已落地并通过本地 ctest 验证 |
+| `octlb::BlockLattice` + BGK | `solver/lbm/block_lattice.*` | 测试绿 | `test_collision_bgk` | T04；T09-W2 扩展 Bouzidi pull |
 | MRT / Smagorinsky Dynamics | `solver/lbm/dynamics/` | 未开始 | — | 复用 OpenLB 算法头文件，集成测试间接覆盖 |
-| Bouzidi BC | `solver/lbm/boundary/` | 未开始 | — | T09；复用 OpenLB boundary/；依赖 T07 `MaterialField` |
+| 域边界 BC（`DomainBoundaryHandler`） | `solver/lbm/domain_boundary_handler.*`、`boundary/bounce_back.h`、`boundary/zou_he_velocity.h` | 测试绿 | `test_domain_boundary` | T09-W1；no-slip + moving lid；注入 `TimeLoop` |
+| Bouzidi BC + `MaterialField` 初始化 | `solver/lbm/boundary/bouzidi_pull.h`、`bouzidi_link_data.*`、`lattice_material_init.*` | 测试绿 | `test_bouzidi_link` | T09-W2；init 缓存 `q_frac` + `stream()` pull；静态 AMR v1 |
 | LevelCoupler（Lagrava） | `solver/lbm/level_coupler.*` | 测试绿 | `test_lagrava_coupler`、`test_lagrava_coupler_mpi2` | T06；算法复用 dynamics/，Solver 侧 coupling_plan_ |
-| TimeLoop（递归下降） | `solver/lbm/time_loop/` | 测试绿 | `test_time_loop_levels` | T06；外部引用 GhostSchedule/LevelCoupler；v1 每步全局 `GhostSchedule::exchange()` |
+| TimeLoop（递归下降） | `solver/lbm/time_loop/` | 测试绿 | `test_time_loop_levels` | T06；T09-W1 注入 `DomainBoundaryHandler`（`NoOp` 回归）；v1 每步全局 `GhostSchedule::exchange()` |
 | CoarseFineFace `comm_tags[4]` | `mesh/topology/` | 测试绿 | `test_face_pair_list`、`test_lagrava_coupler_mpi2` | T06 扩展 T02 |
-| unit_converter | `solver/lbm/unit_converter/` | 未开始 | — | cavity3d 集成阶段；不在 T06 |
+| unit_converter | `solver/lbm/unit_converter/` | 未开始 | — | **T10** cavity3d 集成 |
 
 ### Solver/io 模块
 
@@ -496,6 +532,6 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 
 | 测试 | 状态 | 前置条件 | 验收标准 |
 |---|---|---|---|
-| `test_cavity3d_serial` | 未开始 | 测试 0–11 全绿 | Re=100 中线速度剖面与 Ghia 1982 误差 < 2% |
-| `test_cylinder3d_parallel` | 未开始 | `test_cavity3d_serial` 通过 | ≥4 rank，Cd 与 OpenLB 参考值误差 < 1% |
-| `test_amr_convergence` | 未开始 | `test_cylinder3d_parallel` 通过 | L=1→3 速度场 L2 误差收敛阶 ≈ 2 |
+| `test_cavity3d_serial` | 未开始 | 单元测试 0–11 + T09（11a–11c）全绿 | Re=100 中线速度剖面与 Ghia 1982 误差 < 2%（**T10**） |
+| `test_cylinder3d_parallel` | 未开始 | `test_cavity3d_serial` + **T09-W2** | ≥4 rank，Cd 与 OpenLB 参考值误差 < 1%（**T11**） |
+| `test_amr_convergence` | 未开始 | `test_cylinder3d_parallel` 通过 | L=1→3 速度场 L2 误差收敛阶 ≈ 2（**T12**） |

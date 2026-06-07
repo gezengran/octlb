@@ -1,5 +1,8 @@
 #include "block_lattice.h"
 
+#include "src/solver/lbm/boundary/bouzidi_pull.h"
+#include "src/solver/lbm/bouzidi_link_data.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cstring>
@@ -193,7 +196,8 @@ template <typename T, typename DESCRIPTOR>
 BlockLattice<T, DESCRIPTOR>::BlockLattice(int nx, int ny, int nz, int halo)
     : nx_(nx), ny_(ny), nz_(nz), h_(halo),
       populations_((nx + 2*halo) * (ny + 2*halo) * (nz + 2*halo) * kQ,
-                   T{0}) {}
+                   T{0}),
+      cell_kinds_(static_cast<std::size_t>(nx * ny * nz), CellKind::kFluid) {}
 
 template <typename T, typename DESCRIPTOR>
 void BlockLattice<T, DESCRIPTOR>::initialize(T rho0, const T* u0) {
@@ -211,10 +215,36 @@ void BlockLattice<T, DESCRIPTOR>::initialize(T rho0, const T* u0) {
 }
 
 template <typename T, typename DESCRIPTOR>
+void BlockLattice<T, DESCRIPTOR>::set_cell_kind(int ix, int iy, int iz,
+                                                  CellKind kind) {
+  cell_kinds_[static_cast<std::size_t>((ix * ny_ + iy) * nz_ + iz)] = kind;
+}
+
+template <typename T, typename DESCRIPTOR>
+CellKind BlockLattice<T, DESCRIPTOR>::cell_kind(int ix, int iy, int iz) const {
+  return cell_kinds_[static_cast<std::size_t>((ix * ny_ + iy) * nz_ + iz)];
+}
+
+template <typename T, typename DESCRIPTOR>
+T* BlockLattice<T, DESCRIPTOR>::populations_at_halo(int hx, int hy, int hz) {
+  return &populations_[halo_idx(hx, hy, hz)];
+}
+
+template <typename T, typename DESCRIPTOR>
+const T* BlockLattice<T, DESCRIPTOR>::populations_at_halo(int hx, int hy,
+                                                          int hz) const {
+  return &populations_[halo_idx(hx, hy, hz)];
+}
+
+template <typename T, typename DESCRIPTOR>
 void BlockLattice<T, DESCRIPTOR>::collide(T omega) {
   for (int ix = 0; ix < nx_; ++ix)
     for (int iy = 0; iy < ny_; ++iy)
       for (int iz = 0; iz < nz_; ++iz) {
+        const CellKind kind = cell_kind(ix, iy, iz);
+        if (kind == CellKind::kSolid || kind == CellKind::kBoundary) {
+          continue;
+        }
         auto cell = get(ix, iy, iz);
         T rho{}, u[DESCRIPTOR::d]{};
         cell.computeRhoU(rho, u);
@@ -232,23 +262,65 @@ void BlockLattice<T, DESCRIPTOR>::collide(T omega) {
 
 template <typename T, typename DESCRIPTOR>
 void BlockLattice<T, DESCRIPTOR>::stream() {
-  // Pull-scheme: f_new[x][iPop] = f_old[x - c[iPop]][iPop].
-  // Reads from [h_-1 .. Nx+h_] (includes ghost halo on both sides).
   const int NX = nx_ + 2*h_;
   const int NY = ny_ + 2*h_;
   const int NZ = nz_ + 2*h_;
 
   std::vector<T> tmp(populations_.size());
 
+  auto kind_at_halo = [&](int hx, int hy, int hz) -> CellKind {
+    const int ix = hx - h_;
+    const int iy = hy - h_;
+    const int iz = hz - h_;
+    if (ix < 0 || ix >= nx_ || iy < 0 || iy >= ny_ || iz < 0 || iz >= nz_) {
+      return CellKind::kFluid;
+    }
+    return cell_kind(ix, iy, iz);
+  };
+
   for (int ix = h_; ix < nx_ + h_; ++ix)
     for (int iy = h_; iy < ny_ + h_; ++iy)
       for (int iz = h_; iz < nz_ + h_; ++iz) {
+        const int ix_int = ix - h_;
+        const int iy_int = iy - h_;
+        const int iz_int = iz - h_;
+        const CellKind kind = cell_kind(ix_int, iy_int, iz_int);
+        if (kind == CellKind::kSolid || kind == CellKind::kBoundary) {
+          continue;
+        }
         const int dst = (ix * NY * NZ + iy * NZ + iz) * kQ;
         for (int iPop = 0; iPop < kQ; ++iPop) {
           const int sx = ix - olb::descriptors::c<DESCRIPTOR>(iPop, 0);
           const int sy = iy - olb::descriptors::c<DESCRIPTOR>(iPop, 1);
           const int sz = iz - olb::descriptors::c<DESCRIPTOR>(iPop, 2);
           const int src = (sx * NY * NZ + sy * NZ + sz) * kQ + iPop;
+
+          const CellKind src_kind = kind_at_halo(sx, sy, sz);
+          if (bouzidi_ != nullptr &&
+              (src_kind == CellKind::kSolid || src_kind == CellKind::kBoundary)) {
+            const double q_frac =
+                bouzidi_->q_frac(octant_id_, ix_int, iy_int, iz_int, iPop);
+            if (q_frac > 1.0e-10 && q_frac < 1.0 - 1.0e-10) {
+              const int opp = olb::descriptors::opposite<DESCRIPTOR>(iPop);
+              const T f_bb_opp = populations_[dst + opp];
+              T f_interior_q = populations_[dst + iPop];
+              const int nx_h = ix + olb::descriptors::c<DESCRIPTOR>(iPop, 0);
+              const int ny_h = iy + olb::descriptors::c<DESCRIPTOR>(iPop, 1);
+              const int nz_h = iz + olb::descriptors::c<DESCRIPTOR>(iPop, 2);
+              const int nbase =
+                  (nx_h * NY * NZ + ny_h * NZ + nz_h) * kQ + iPop;
+              if (kind_at_halo(nx_h, ny_h, nz_h) == CellKind::kFluid) {
+                f_interior_q = populations_[nbase];
+              }
+              tmp[dst + iPop] = boundary::BouzidiPostCollisionPull(
+                  f_bb_opp, f_interior_q, populations_[dst + iPop], q_frac);
+              continue;
+            }
+            const int opp = olb::descriptors::opposite<DESCRIPTOR>(iPop);
+            tmp[dst + iPop] = populations_[dst + opp];
+            continue;
+          }
+
           tmp[dst + iPop] = populations_[src];
         }
       }

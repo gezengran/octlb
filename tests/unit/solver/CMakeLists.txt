@@ -155,3 +155,76 @@ add_test(NAME test_vtk_writer_two_rank
     $<TARGET_FILE:test_vtk_writer>
     --gtest_filter=VtkWriter.TwoRank_VtmListsAllBlocks
 )
+
+add_executable(test_lattice_cell_kind
+  test_lattice_cell_kind.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
+
+target_compile_features(test_lattice_cell_kind PRIVATE cxx_std_20)
+
+target_link_libraries(test_lattice_cell_kind
+  PRIVATE
+    octlb_lbm
+    GTest::gtest
+    MPI::MPI_CXX
+)
+
+add_test(NAME test_lattice_cell_kind
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 1
+    --oversubscribe
+    $<TARGET_FILE:test_lattice_cell_kind>
+)
+
+add_executable(test_domain_boundary
+  test_domain_boundary.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
+
+target_compile_features(test_domain_boundary PRIVATE cxx_std_20)
+
+target_link_libraries(test_domain_boundary
+  PRIVATE
+    octlb_lbm
+    octlb_field
+    GTest::gtest
+    MPI::MPI_CXX
+)
+
+add_test(NAME test_domain_boundary
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 1
+    --oversubscribe
+    $<TARGET_FILE:test_domain_boundary>
+)
+
+add_executable(test_bouzidi_link
+  test_bouzidi_link.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
+
+target_compile_features(test_bouzidi_link PRIVATE cxx_std_20)
+
+target_include_directories(test_bouzidi_link
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(test_bouzidi_link
+  PRIVATE
+    octlb_lbm
+    octlb_mesh
+    GTest::gtest
+    MPI::MPI_CXX
+)
+
+add_test(NAME test_bouzidi_link
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 1
+    --oversubscribe
+    $<TARGET_FILE:test_bouzidi_link>
+)
