@@ -10,8 +10,11 @@
 #include <vector>
 
 #include "src/common/types.h"
+#include "src/solver/lbm/cell_kind.h"
 
 namespace octlb {
+
+class BouzidiLinkData;
 
 // Proxy for a single lattice cell; satisfies olb::concepts::MinimalCell.
 // Points directly into BlockLattice::populations_, no allocation.
@@ -79,6 +82,19 @@ class BlockLattice {
   //   3. stream()               — interior ← f*[x - c]
   void stream();
 
+  void set_bouzidi_links(const BouzidiLinkData* links) { bouzidi_ = links; }
+  const BouzidiLinkData* bouzidi_links() const { return bouzidi_; }
+
+  void set_octant_id(OctantId id) { octant_id_ = id; }
+  OctantId octant_id() const { return octant_id_; }
+
+  void set_cell_kind(int ix, int iy, int iz, CellKind kind);
+  CellKind cell_kind(int ix, int iy, int iz) const;
+
+  // Halo coordinates: hx in [0, nx+2*h_), hy, hz likewise.
+  T* populations_at_halo(int hx, int hy, int hz);
+  const T* populations_at_halo(int hx, int hy, int hz) const;
+
   // Fill ghost halo with periodic boundary values (for unit tests).
   // In production, GhostSchedule<BlockLattice> performs the equivalent MPI
   // exchange after collide() and before stream().
@@ -110,6 +126,9 @@ class BlockLattice {
 
   int nx_, ny_, nz_, h_;
   std::vector<T> populations_;
+  std::vector<CellKind> cell_kinds_;
+  const BouzidiLinkData* bouzidi_ = nullptr;
+  OctantId octant_id_ = 0;
 };
 
 }  // namespace octlb

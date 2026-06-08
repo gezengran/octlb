@@ -26,18 +26,26 @@ struct CoarseFineFace {
   int comm_tags[4];  // Symmetric MPI tag per fine slot (T06).
 };
 
+/** Domain outer face: octant touches the physical tree boundary (T09-W1). */
+struct TreeBoundaryFace {
+  OctantId octant_id;
+  FaceDir face_dir;
+};
+
 class FacePairList {
  public:
   explicit FacePairList(const OctreeForest& forest);
 
   const std::vector<SameLevelFace>& same_level_faces() const;
   const std::vector<CoarseFineFace>& coarse_fine_faces() const;
+  const std::vector<TreeBoundaryFace>& tree_boundary_faces() const;
 
   void rebuild(const OctreeForest& forest);
 
  private:
   std::vector<SameLevelFace> same_level_;
   std::vector<CoarseFineFace> coarse_fine_;
+  std::vector<TreeBoundaryFace> tree_boundary_;
 };
 
 }  // namespace octlb

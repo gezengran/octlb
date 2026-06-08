@@ -24,6 +24,7 @@ struct FaceBuildContext {
   std::unordered_set<uint64_t> cross_rank_face_keys;
   std::vector<SameLevelFace>* same_level = nullptr;
   std::vector<CoarseFineFace>* coarse_fine = nullptr;
+  std::vector<TreeBoundaryFace>* tree_boundary = nullptr;
 };
 
 int GhostOwnerRank(const p8est_ghost_t* ghost, p4est_locidx_t ghost_index) {
@@ -174,9 +175,31 @@ bool SideHasLocalQuadrant(const FaceBuildContext& ctx,
 
 void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
   auto* build = static_cast<FaceBuildContext*>(user_data);
+
   if (info->tree_boundary != 0) {
+    if (build->tree_boundary == nullptr || info->sides.elem_count == 0) {
+      return;
+    }
+    for (p4est_locidx_t si = 0; si < info->sides.elem_count; ++si) {
+      p8est_iter_face_side_t* side =
+          p8est_iter_fside_array_index_int(&info->sides, si);
+      if (!SideHasLocalQuadrant(*build, *side)) {
+        continue;
+      }
+      OctantId local_id = 0;
+      int rank = -1;
+      if (!ResolveFullSide(*build, *side, &local_id, &rank)) {
+        continue;
+      }
+      if (rank != build->my_rank) {
+        continue;
+      }
+      build->tree_boundary->push_back(
+          {local_id, static_cast<FaceDir>(side->face)});
+    }
     return;
   }
+
   if (info->sides.elem_count != 2) {
     return;
   }
@@ -291,6 +314,7 @@ FacePairList::FacePairList(const OctreeForest& forest) {
   FaceBuildContext ctx;
   ctx.same_level = &same_level_;
   ctx.coarse_fine = &coarse_fine_;
+  ctx.tree_boundary = &tree_boundary_;
   BuildFromForest(forest, &ctx);
 }
 
@@ -302,12 +326,18 @@ const std::vector<CoarseFineFace>& FacePairList::coarse_fine_faces() const {
   return coarse_fine_;
 }
 
+const std::vector<TreeBoundaryFace>& FacePairList::tree_boundary_faces() const {
+  return tree_boundary_;
+}
+
 void FacePairList::rebuild(const OctreeForest& forest) {
   same_level_.clear();
   coarse_fine_.clear();
+  tree_boundary_.clear();
   FaceBuildContext ctx;
   ctx.same_level = &same_level_;
   ctx.coarse_fine = &coarse_fine_;
+  ctx.tree_boundary = &tree_boundary_;
   BuildFromForest(forest, &ctx);
 }
 

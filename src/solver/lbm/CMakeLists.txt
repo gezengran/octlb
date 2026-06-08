@@ -1,5 +1,8 @@
 add_library(octlb_lbm STATIC
   block_lattice.cpp
+  bouzidi_link_data.cpp
+  domain_boundary_handler.cpp
+  lattice_material_init.cpp
   level_coupler.cpp
 )
 

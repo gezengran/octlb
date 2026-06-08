@@ -9,6 +9,7 @@
 #include "src/solver/field/ghost_schedule.h"
 #include "src/solver/lbm/block_lattice.h"
 #include "src/solver/lbm/level_coupler.h"
+#include "src/solver/lbm/domain_boundary_handler.h"
 
 namespace octlb {
 
@@ -36,7 +37,7 @@ class TimeLoop {
  public:
   TimeLoop(const OctreeForest& forest, BlockCollection<TimeLoopLattice>& blocks,
            GhostSchedule<TimeLoopLattice>& ghosts, LevelCoupler& coupler,
-           double omega);
+           DomainBoundaryHandler& domain_bc, double omega);
 
   void advance_one();
 
@@ -53,6 +54,7 @@ class TimeLoop {
   BlockCollection<TimeLoopLattice>& blocks_;
   GhostSchedule<TimeLoopLattice>& ghosts_;
   LevelCoupler& coupler_;
+  DomainBoundaryHandler& domain_bc_;
   double omega_;
   int max_level_;
 
@@ -63,10 +65,12 @@ class TimeLoop {
 inline TimeLoop::TimeLoop(const OctreeForest& forest,
                           BlockCollection<TimeLoopLattice>& blocks,
                           GhostSchedule<TimeLoopLattice>& ghosts,
-                          LevelCoupler& coupler, double omega)
+                          LevelCoupler& coupler,
+                          DomainBoundaryHandler& domain_bc, double omega)
     : blocks_(blocks),
       ghosts_(ghosts),
       coupler_(coupler),
+      domain_bc_(domain_bc),
       omega_(omega),
       max_level_(0) {
   for (label i = 0; i < forest.local_num_octants(); ++i) {
@@ -107,8 +111,8 @@ inline void TimeLoop::stream_level(int level) {
 
 inline void TimeLoop::advance(int level) {
   collide_level(level);
-  // Global same-level halo exchange (v1: all faces each call).
   ghosts_.exchange();
+  domain_bc_.apply();
   stream_level(level);
 
   if (level >= max_level_) {

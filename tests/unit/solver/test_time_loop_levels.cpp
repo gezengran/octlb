@@ -10,6 +10,7 @@
 #include "src/solver/field/ghost_schedule.h"
 #include "src/solver/lbm/level_coupler.h"
 #include "src/solver/lbm/time_loop/time_loop.h"
+#include "src/solver/lbm/domain_boundary_handler.h"
 
 namespace octlb {
 namespace {
@@ -85,7 +86,8 @@ TEST(TimeLoopLevels, ThreeLevels_StepCountRatio_1_2_4) {
                                         kN);
   LevelCoupler coupler(MPI_COMM_WORLD, pairs, forest, blocks, kN, kN, kN,
                        kOmega);
-  TimeLoop loop(forest, blocks, ghosts, coupler, kOmega);
+  NoOpDomainBoundaryHandler domain_bc;
+  TimeLoop loop(forest, blocks, ghosts, coupler, domain_bc, kOmega);
 
   loop.advance_one();
 
@@ -118,7 +120,8 @@ TEST(TimeLoopLevels, ThreeLevels_CouplerCallOrder) {
                                         kN);
   LevelCoupler coupler(MPI_COMM_WORLD, pairs, forest, blocks, kN, kN, kN,
                        kOmega);
-  TimeLoop loop(forest, blocks, ghosts, coupler, kOmega);
+  NoOpDomainBoundaryHandler domain_bc;
+  TimeLoop loop(forest, blocks, ghosts, coupler, domain_bc, kOmega);
   loop.advance_one();
 
   const auto& calls = loop.counters().coupler_calls;
@@ -166,7 +169,8 @@ TEST(TimeLoopLevels, AdvanceOne_WithBlockLattice_NoThrow) {
                                         kN);
   LevelCoupler coupler(MPI_COMM_WORLD, pairs, forest, blocks, kN, kN, kN,
                        kOmega);
-  TimeLoop loop(forest, blocks, ghosts, coupler, kOmega);
+  NoOpDomainBoundaryHandler domain_bc;
+  TimeLoop loop(forest, blocks, ghosts, coupler, domain_bc, kOmega);
 
   for (int step = 0; step < 3; ++step) {
     loop.advance_one();
