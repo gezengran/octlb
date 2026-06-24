@@ -1,0 +1,162 @@
+#include <gtest/gtest.h>
+
+#include <array>
+#include <vector>
+
+#include "src/solver/lbm/block_lattice.h"
+#include "src/solver/lbm/boundary/interpolated_velocity.h"
+#include "src/solver/lbm/cell_kind.h"
+#include "src/solver/lbm/domain_boundary_handler.h"
+
+namespace octlb {
+namespace {
+
+using T = double;
+using Descriptor = olb::descriptors::D3Q19<>;
+using Lattice = BlockLattice<T, Descriptor>;
+
+std::vector<DomainBcSpec> AllInterpolatedVelocitySpecs() {
+  std::vector<DomainBcSpec> specs;
+  for (const FaceDir face :
+       {FaceDir::kXMin, FaceDir::kXMax, FaceDir::kYMin, FaceDir::kYMax,
+        FaceDir::kZMin, FaceDir::kZMax}) {
+    DomainBcSpec spec;
+    spec.face = face;
+    spec.type = DomainBcType::kInterpolatedVelocity;
+    specs.push_back(spec);
+  }
+  return specs;
+}
+
+// OpenLB lbm::computeRho on f-t shifted storage: rho = 1 + sum_i f_i.
+T OpenLbBulkRhoFromPops(const T* f) {
+  T rho = T{1};
+  for (int iPop = 0; iPop < Descriptor::q; ++iPop) {
+    rho += f[iPop];
+  }
+  return rho;
+}
+
+Lattice MakeInitializedBoundaryLattice(int n, int halo = 1) {
+  Lattice lat(n, n, n, halo);
+  const std::array<T, 3> u0{T{0}, T{0}, T{0}};
+  lat.initialize(T{1}, u0.data());
+  boundary::MarkDomainBoundaryCellKinds(lat, n, n, n);
+  return lat;
+}
+
+TEST(InterpolatedVelocityComputeRho, CornerEdge_Equilibrium_ReturnsOneNotRawSum) {
+  constexpr int kN = 8;
+  Lattice lat = MakeInitializedBoundaryLattice(kN);
+  const std::vector<DomainBcSpec> specs = AllInterpolatedVelocitySpecs();
+  boundary::detail::BoundaryLatticeView<T, Descriptor, Lattice> view(
+      lat, kN, kN, kN, specs);
+
+  const std::array<std::array<int, 3>, 4> corner_edge_cells{{
+      {0, 0, 0},
+      {kN - 1, 0, kN - 1},
+      {0, kN / 2, kN - 1},
+      {0, kN - 1, kN - 1},
+  }};
+
+  for (const auto& xyz : corner_edge_cells) {
+    const int ix = xyz[0];
+    const int iy = xyz[1];
+    const int iz = xyz[2];
+    ASSERT_EQ(lat.cell_kind(ix, iy, iz), CellKind::kBoundary);
+    EXPECT_GE(boundary::detail::BoundaryFaceCount(ix, iy, iz, kN, kN, kN), 2)
+        << "cell (" << ix << ',' << iy << ',' << iz << ")";
+
+    T raw_sum = T{0};
+    for (int iPop = 0; iPop < Descriptor::q; ++iPop) {
+      raw_sum += lat.get(ix, iy, iz)[iPop];
+    }
+    EXPECT_NEAR(raw_sum, T{0}, 1e-14)
+        << "cell (" << ix << ',' << iy << ',' << iz << ")";
+
+    const T rho = view.ComputeRho(ix, iy, iz);
+    EXPECT_NEAR(rho, T{1}, 1e-14)
+        << "cell (" << ix << ',' << iy << ',' << iz << ")";
+    EXPECT_NE(rho, raw_sum)
+        << "ComputeRho must use OpenLB sum+1, not raw sum";
+  }
+}
+
+TEST(InterpolatedVelocityComputeRho, CornerEdge_MatchesCellProxyAndOpenLbFormula) {
+  constexpr int kN = 8;
+  Lattice lat = MakeInitializedBoundaryLattice(kN);
+  const std::vector<DomainBcSpec> specs = AllInterpolatedVelocitySpecs();
+  boundary::detail::BoundaryLatticeView<T, Descriptor, Lattice> view(
+      lat, kN, kN, kN, specs);
+
+  constexpr int kIx = 0;
+  constexpr int kIy = kN / 2;
+  constexpr int kIz = kN - 1;
+
+  auto cell = lat.get(kIx, kIy, kIz);
+  cell[2] = T{0.04};
+  cell[7] = T{-0.02};
+  cell[12] = T{0.01};
+
+  const T* f = &cell[0];
+  T rho_cell = T{0};
+  T u[3]{};
+  cell.computeRhoU(rho_cell, u);
+
+  EXPECT_NEAR(view.ComputeRho(kIx, kIy, kIz), rho_cell, 1e-14);
+  EXPECT_NEAR(view.ComputeRho(kIx, kIy, kIz), OpenLbBulkRhoFromPops(f), 1e-14);
+}
+
+TEST(InterpolatedVelocityComputeRho, FlatFace_StillUsesVelocityBoundaryRho) {
+  constexpr int kN = 8;
+  Lattice lat = MakeInitializedBoundaryLattice(kN);
+  const std::vector<DomainBcSpec> specs = AllInterpolatedVelocitySpecs();
+  boundary::detail::BoundaryLatticeView<T, Descriptor, Lattice> view(
+      lat, kN, kN, kN, specs);
+
+  constexpr int kIx = kN / 2;
+  constexpr int kIy = 0;
+  constexpr int kIz = kN / 2;
+
+  int direction = 0;
+  int orientation = 0;
+  ASSERT_TRUE(boundary::detail::FlatBoundaryFaceInfo(kIx, kIy, kIz, kN, kN, kN,
+                                                     direction, orientation));
+  ASSERT_EQ(direction, 1);
+  ASSERT_EQ(orientation, -1);
+
+  auto cell = lat.get(kIx, kIy, kIz);
+  cell[3] = T{0.02};
+  cell[9] = T{-0.01};
+
+  T u_wall[3]{};
+  boundary::detail::PrescribedBoundaryU(kIx, kIy, kIz, kN, kN, kN, specs,
+                                        u_wall);
+  const T rho_expected = boundary::detail::VelocityBoundaryRhoFromPop<
+      T, Descriptor>(direction, orientation, &cell[0], u_wall);
+
+  EXPECT_NEAR(view.ComputeRho(kIx, kIy, kIz), rho_expected, 1e-14);
+}
+
+TEST(InterpolatedVelocityComputeRho, CavityEdgeCell_02930_EquilibriumRhoOne) {
+  constexpr int kN = 31;
+  Lattice lat = MakeInitializedBoundaryLattice(kN, 3);
+  const std::vector<DomainBcSpec> specs = AllInterpolatedVelocitySpecs();
+  boundary::detail::BoundaryLatticeView<T, Descriptor, Lattice> view(
+      lat, kN, kN, kN, specs);
+
+  constexpr int kIx = 0;
+  constexpr int kIy = kN - 2;
+  constexpr int kIz = kN - 1;
+
+  T raw_sum = T{0};
+  for (int iPop = 0; iPop < Descriptor::q; ++iPop) {
+    raw_sum += lat.get(kIx, kIy, kIz)[iPop];
+  }
+  EXPECT_NEAR(raw_sum, T{0}, 1e-14);
+
+  EXPECT_NEAR(view.ComputeRho(kIx, kIy, kIz), T{1}, 1e-14);
+}
+
+}  // namespace
+}  // namespace octlb

@@ -125,6 +125,9 @@ desktop.ini
 tmp/
 output/
 results/
+*.txt
+!CMakeLists.txt
+!**/CMakeLists.txt
 
 # Geometry: track fixtures under tests/ and examples/, ignore ad-hoc local STLs
 *.stl

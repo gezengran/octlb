@@ -1,7 +1,7 @@
 # OctLB 框架 PRD
 
 > 版本：v0.2  
-> 日期：2026-05-28（进度更新：2026-06-07）
+> 日期：2026-05-28（进度更新：2026-06-24；T10 完成，见 `doc/tasks/T10-cavity3d.md`）
 
 ---
 
@@ -415,7 +415,7 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 | 11a | `test_lattice_cell_kind` | `CellKind` 默认全 fluid；`kSolid` 跳过 `collide`；与既有 BGK 行为一致 | Solver/lbm |
 | 11b | `test_domain_boundary` | no-slip tree ghost bounce-back；moving lid Zou-He 宏观速度与配置一致 | Solver/lbm |
 | 11c | `test_bouzidi_link` | `BouzidiLinkData::Build` 缓存 `q_frac`；`stream()` Bouzidi 替代 solid pull；`initialize_from_material` 映射 T07 fixture | Solver/lbm |
-| 12 | `test_cavity3d_serial` | 单 rank，cavity3d，Re=100，中线速度剖面与 Ghia 1982 参考值误差 < 2% | Integration |
+| 12 | `test_cavity3d_serial` | 单 rank，cavity3d（**单根 octant、L=0、无 AMR**），OpenLB 默认参数，**iT=5269**（OpenLB 收敛步）；`x=z=0.5` 竖直中线 17 点 vs OpenLB 参考剖面，`u_x/u_lid` **相对 L2** < 2% | Integration |
 | 13 | `test_cylinder3d_parallel` | 多 rank（≥4），cylinder3d L=4，阻力系数 Cd 与 OpenLB 参考值误差 < 1% | Integration |
 | 14 | `test_amr_convergence` | L=1→3 逐级细化，速度场 L2 误差收敛阶 ≈ 2 | Integration |
 
@@ -429,11 +429,28 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 | T08 | `vtk_writer` | T03、T01 | **测试绿** | #11（见 `T08-vtk-writer.md`） |
 | **T09-W1** | 域边界 BC + `CellKind` + `TimeLoop` 注入 | T02、T04、T06 | **测试绿** | #11a、#11b；`test_face_pair_list` 扩展（见 `T09-boundary-bc.md`） |
 | **T09-W2** | Bouzidi + `MaterialField` 初始化 | T09-W1、T07 | **测试绿** | #11c |
-| **T10** | `unit_converter` + `cavity3d` | T09-W1 | 未开始 | #12 |
+| **T10-W1** | `unit_converter` | T04 | **测试绿** | `test_unit_converter`（见 `T10-cavity3d.md`） |
+| **T10-W2** | cavity 组装 + 冒烟 | T10-W1、T09-W1、T06 | **测试绿** | `test_cavity3d_serial`（smoke） |
+| **T10-W3** | OpenLB #12 + `examples/cavity3d` + VTK P1 | T10-W2、T08 W4 | **测试绿** | #12、`examples/cavity3d` |
 | **T11** | `cylinder3d` + 进出口 BC | T09-W2、#12 | 未开始 | #13 |
 | **T12** | AMR 收敛 | T11 | 未开始 | #14 |
 
-T08 与 T07 无硬阻塞；T09-W2 阻塞于 T07；**当前里程碑**：Mesh + Solver 单元测试（含 T09）已绿，下一项为 **T10 cavity3d**。
+T08 与 T07 无硬阻塞；T09-W2 阻塞于 T07；**当前里程碑**：T01–T10 已绿（含集成 #12 `test_cavity3d_serial`）；下一项为 **T11 cylinder3d**（#13，见 `doc/tasks/` 待建）。
+
+### T10 · cavity3d 实现决策（2026-06-08，验收 2026-06-24）
+
+| 项目 | 决策 |
+|------|------|
+| **算例对齐** | 离散参数与 OpenLB `examples/laminar/cavity3d` 默认一致：`N=30`，`τ=0.509`，`L=1`，`U_lid=1`，`ν=0.001`（**Re=1000**），`ρ=1`，`T_max=100` phys → `iT_max=getLatticeTime(100)` = **30000** |
+| **网格** | `OctreeForest` **单根 octant**、`[0,1]³`、**不 refine**（`max_level=0`）；多级 cavity 不在 T10 |
+| **时间推进** | **固定步数**；#12 与 example 默认 **iT=5269**（OpenLB ValueTracer 收敛步）；T10 **不**实现收敛检测 |
+| **unit_converter** | `octlb` 轻量 struct，公式对齐 OpenLB `UnitConverterFromResolutionAndRelaxationTime`；不复制 OpenLB 完整 `unitConverter.h` |
+| **#12 验收** | 17 点竖直中线（Ghia 高度采样 `x=z=0.5`）；`u_x/u_lid` 相对 **OpenLB 参考剖面** L2 < 2%；Ghia Re=100 表仅诊断 |
+| **域 BC** | 六面 `kInterpolatedVelocity`（OpenLB `InterpolatedVelocity` / Skordos FD）；顶面 `u_wall=(u_lid_lattice,0,0)`，其余面 0 |
+| **ConstRho** | `ConstRhoBGK` + `ConstRhoStatsScope::kFluidAndBoundary`（OpenLB 对齐）；不做 scope A/B 集成对比 |
+| **example** | `examples/cavity3d/` 与集成测试共用 `cavity3d_case.h`；默认写 VTK + `centerline.csv` |
+| **VTK** | T08 `AmrVtkWriter` + `vtk_lbm_fields.h`；P1 可视化（过域心 x–y 平面，ParaView Slice）；ctest 默认不写 VTK |
+| **阻塞** | 仅 **T09-W1**；不依赖 T09-W2 / STL / Bouzidi |
 
 **测试基础设施**：GTest + MPI。
 - `tests/mpi_main.cpp`：手写 `MPI_Init → RUN_ALL_TESTS → MPI_Finalize`，所有 MPI 测试 target 链接此 main 而非 `GTest::gtest_main`。
@@ -485,7 +502,7 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 ## 需求完成情况
 
 > 状态说明：`未开始` / `开发中` / `测试绿` / `完成`  
-> **当前进度（2026-06-07）**：T01–T09（W1+W2）单元测试已绿；集成算例（cavity3d / cylinder3d / AMR 收敛）尚未启动（T10–T12）。
+> **当前进度（2026-06-24）**：T01–T10 已绿（单元 + 集成 #12 `test_cavity3d_serial`）；`examples/cavity3d` 可跑；下一项 **T11** cylinder3d（#13）；T12 AMR 收敛未开始。
 
 ### Mesh 模块
 
@@ -514,12 +531,13 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 |---|---|---|---|---|
 | `octlb::BlockLattice` + BGK | `solver/lbm/block_lattice.*` | 测试绿 | `test_collision_bgk` | T04；T09-W2 扩展 Bouzidi pull |
 | MRT / Smagorinsky Dynamics | `solver/lbm/dynamics/` | 未开始 | — | 复用 OpenLB 算法头文件，集成测试间接覆盖 |
-| 域边界 BC（`DomainBoundaryHandler`） | `solver/lbm/domain_boundary_handler.*`、`boundary/bounce_back.h`、`boundary/zou_he_velocity.h` | 测试绿 | `test_domain_boundary` | T09-W1；no-slip + moving lid；注入 `TimeLoop` |
+| 域边界 BC（`DomainBoundaryHandler`） | `solver/lbm/domain_boundary_handler.*`、`boundary/bounce_back.h`、`boundary/zou_he_velocity.h`、`boundary/interpolated_velocity.h` | 测试绿 | `test_domain_boundary`、`test_interpolated_velocity_compute_rho` | T09-W1 no-slip + moving lid；**T10** 六面 `InterpolatedVelocity` + corner `ComputeRho` |
 | Bouzidi BC + `MaterialField` 初始化 | `solver/lbm/boundary/bouzidi_pull.h`、`bouzidi_link_data.*`、`lattice_material_init.*` | 测试绿 | `test_bouzidi_link` | T09-W2；init 缓存 `q_frac` + `stream()` pull；静态 AMR v1 |
 | LevelCoupler（Lagrava） | `solver/lbm/level_coupler.*` | 测试绿 | `test_lagrava_coupler`、`test_lagrava_coupler_mpi2` | T06；算法复用 dynamics/，Solver 侧 coupling_plan_ |
 | TimeLoop（递归下降） | `solver/lbm/time_loop/` | 测试绿 | `test_time_loop_levels` | T06；T09-W1 注入 `DomainBoundaryHandler`（`NoOp` 回归）；v1 每步全局 `GhostSchedule::exchange()` |
 | CoarseFineFace `comm_tags[4]` | `mesh/topology/` | 测试绿 | `test_face_pair_list`、`test_lagrava_coupler_mpi2` | T06 扩展 T02 |
-| unit_converter | `solver/lbm/unit_converter/` | 未开始 | — | **T10** cavity3d 集成 |
+| unit_converter | `solver/lbm/unit_converter/` | 测试绿 | `test_unit_converter`（T10-W1） | OpenLB `FromResolutionAndRelaxationTime` 公式；见 `T10-cavity3d.md` |
+| cavity3d 集成 | `examples/cavity3d/`、`tests/integration/` | 测试绿 | `test_cavity3d_serial`（#12） | T10-W2/W3；单根 L=0、iT=5269、OpenLB 参考剖面相对 L2 |
 
 ### Solver/io 模块
 
@@ -532,6 +550,6 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 
 | 测试 | 状态 | 前置条件 | 验收标准 |
 |---|---|---|---|
-| `test_cavity3d_serial` | 未开始 | 单元测试 0–11 + T09（11a–11c）全绿 | Re=100 中线速度剖面与 Ghia 1982 误差 < 2%（**T10**） |
+| `test_cavity3d_serial` | 测试绿 | 单元测试 0–11 + T09（11a–11c）全绿 | OpenLB 默认参数、**iT=5269**；17 点 `u_x/u_lid` 相对 OpenLB 参考 L2 < 2%（**T10-W3**）；见 `T10-cavity3d.md` |
 | `test_cylinder3d_parallel` | 未开始 | `test_cavity3d_serial` + **T09-W2** | ≥4 rank，Cd 与 OpenLB 参考值误差 < 1%（**T11**） |
 | `test_amr_convergence` | 未开始 | `test_cylinder3d_parallel` 通过 | L=1→3 速度场 L2 误差收敛阶 ≈ 2（**T12**） |

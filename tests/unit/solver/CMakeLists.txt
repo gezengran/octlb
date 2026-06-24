@@ -201,6 +201,21 @@ add_test(NAME test_domain_boundary
     $<TARGET_FILE:test_domain_boundary>
 )
 
+add_executable(test_interpolated_velocity_compute_rho
+  test_interpolated_velocity_compute_rho.cpp
+)
+
+target_compile_features(test_interpolated_velocity_compute_rho PRIVATE cxx_std_20)
+
+target_link_libraries(test_interpolated_velocity_compute_rho
+  PRIVATE
+    octlb_lbm
+    GTest::gtest_main
+)
+
+add_test(NAME test_interpolated_velocity_compute_rho
+  COMMAND test_interpolated_velocity_compute_rho)
+
 add_executable(test_bouzidi_link
   test_bouzidi_link.cpp
   ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
@@ -228,3 +243,15 @@ add_test(NAME test_bouzidi_link
     --oversubscribe
     $<TARGET_FILE:test_bouzidi_link>
 )
+
+add_executable(test_unit_converter test_unit_converter.cpp)
+
+target_compile_features(test_unit_converter PRIVATE cxx_std_20)
+
+target_link_libraries(test_unit_converter
+  PRIVATE
+    octlb_lbm
+    GTest::gtest_main
+)
+
+add_test(NAME test_unit_converter COMMAND test_unit_converter)
