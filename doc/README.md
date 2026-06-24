@@ -26,7 +26,13 @@ doc/
 
 | 文件 | 说明 |
 |------|------|
-| [prd/octlb-framework.md](prd/octlb-framework.md) | OctLB 框架总 PRD（v0.2；含 T09 进度） |
+| [prd/octlb-framework.md](prd/octlb-framework.md) | OctLB 框架总 PRD（v0.2；含 T09/T10 进度） |
+
+**tasks/ 任务文档**
+
+| 文件 | 说明 |
+|------|------|
+| [tasks/T10-cavity3d.md](tasks/T10-cavity3d.md) | T10：unit_converter + cavity3d（W1/W2/W3，已完成） |
 
 **后续可增示例**
 

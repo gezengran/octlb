@@ -1,6 +1,7 @@
 #ifndef OCTLB_SRC_SOLVER_LBM_TIME_LOOP_TIME_LOOP_H_
 #define OCTLB_SRC_SOLVER_LBM_TIME_LOOP_TIME_LOOP_H_
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -32,23 +33,54 @@ struct TimeLoopCounters {
 
 using TimeLoopLattice = BlockLattice<double, olb::descriptors::D3Q19<>>;
 
+/** ConstRhoBGK statistics aggregation scope (cavity3d A/B). */
+enum class ConstRhoStatsScope {
+  /** OpenLB-like: fluid corrected rho + boundary raw rho in one average. */
+  kFluidAndBoundary,
+  /** Option B: only kFluid ConstRho cells contribute to average_rho. */
+  kFluidOnly,
+};
+
 /** Recursive subcycling time integrator for static AMR (T06). */
 class TimeLoop {
  public:
   TimeLoop(const OctreeForest& forest, BlockCollection<TimeLoopLattice>& blocks,
            GhostSchedule<TimeLoopLattice>& ghosts, LevelCoupler& coupler,
-           DomainBoundaryHandler& domain_bc, double omega);
+           DomainBoundaryHandler& domain_bc, double omega,
+           bool use_const_rho_bgk = false,
+           ConstRhoStatsScope const_rho_stats_scope =
+               ConstRhoStatsScope::kFluidAndBoundary);
 
   void advance_one();
+
+  // Single-level diagnostic hooks (cavity3d flat loop).
+  enum class FlatPhase {
+    kAfterCollide,
+    kAfterBoundaryCollide,
+    kAfterGhostExchange,
+    kAfterStream,
+    kAfterPostStream,
+  };
+
+  void advance_one_flat_with_hooks(
+      const std::function<void(FlatPhase)>& hook = {});
+
+  // Same phase order as advance_one() / advance(0) (interleaved BC when enabled).
+  void advance_one_with_hooks(
+      const std::function<void(FlatPhase)>& hook = {});
 
   int max_level() const { return max_level_; }
 
   const TimeLoopCounters& counters() const { return counters_; }
   void reset_counters();
 
+  /** ConstRhoBGK average rho from the previous collide (OpenLB statistics lag). */
+  double average_rho() const { return average_rho_; }
+
  private:
   void advance(int level);
-  void collide_level(int level);
+  void collide_level(int level, CollideRhoStats* rho_stats = nullptr,
+                     bool openlb_spatial_collide_order = false);
   void stream_level(int level);
 
   BlockCollection<TimeLoopLattice>& blocks_;
@@ -56,7 +88,19 @@ class TimeLoop {
   LevelCoupler& coupler_;
   DomainBoundaryHandler& domain_bc_;
   double omega_;
+  bool use_const_rho_bgk_;
+  ConstRhoStatsScope const_rho_stats_scope_;
+  double average_rho_;
   int max_level_;
+
+  CollideRhoStats* boundary_rho_stats(CollideRhoStats* fluid_stats) const {
+    if (fluid_stats == nullptr) {
+      return nullptr;
+    }
+    return const_rho_stats_scope_ == ConstRhoStatsScope::kFluidAndBoundary
+               ? fluid_stats
+               : nullptr;
+  }
 
   std::vector<std::vector<OctantId>> octants_by_level_;
   TimeLoopCounters counters_;
@@ -66,12 +110,17 @@ inline TimeLoop::TimeLoop(const OctreeForest& forest,
                           BlockCollection<TimeLoopLattice>& blocks,
                           GhostSchedule<TimeLoopLattice>& ghosts,
                           LevelCoupler& coupler,
-                          DomainBoundaryHandler& domain_bc, double omega)
+                          DomainBoundaryHandler& domain_bc, double omega,
+                          bool use_const_rho_bgk,
+                          ConstRhoStatsScope const_rho_stats_scope)
     : blocks_(blocks),
       ghosts_(ghosts),
       coupler_(coupler),
       domain_bc_(domain_bc),
       omega_(omega),
+      use_const_rho_bgk_(use_const_rho_bgk),
+      const_rho_stats_scope_(const_rho_stats_scope),
+      average_rho_(1.0),
       max_level_(0) {
   for (label i = 0; i < forest.local_num_octants(); ++i) {
     const int lvl = forest.quadrant_level(static_cast<OctantId>(i));
@@ -95,9 +144,23 @@ inline void TimeLoop::reset_counters() {
   counters_.coupler_calls.clear();
 }
 
-inline void TimeLoop::collide_level(int level) {
-  for (OctantId id : octants_by_level_[static_cast<std::size_t>(level)]) {
-    blocks_[id].collide(static_cast<double>(omega_));
+inline void TimeLoop::collide_level(int level, CollideRhoStats* rho_stats,
+                                   bool openlb_spatial_collide_order) {
+  if (openlb_spatial_collide_order) {
+    for (OctantId id : octants_by_level_[static_cast<std::size_t>(level)]) {
+      domain_bc_.collide_interleaved_with(
+          blocks_[id], rho_stats, average_rho_, use_const_rho_bgk_);
+    }
+  } else {
+    for (OctantId id : octants_by_level_[static_cast<std::size_t>(level)]) {
+      if (use_const_rho_bgk_) {
+        blocks_[id].collide_const_rho(static_cast<double>(omega_),
+                                     static_cast<double>(average_rho_),
+                                     rho_stats);
+      } else {
+        blocks_[id].collide(static_cast<double>(omega_));
+      }
+    }
   }
   ++counters_.collide[static_cast<std::size_t>(level)];
 }
@@ -110,10 +173,22 @@ inline void TimeLoop::stream_level(int level) {
 }
 
 inline void TimeLoop::advance(int level) {
-  collide_level(level);
+  CollideRhoStats rho_stats;
+  CollideRhoStats* stats_ptr =
+      (use_const_rho_bgk_ && level >= max_level_) ? &rho_stats : nullptr;
+  const bool openlb_order = domain_bc_.collide_boundary_before_bulk();
+  collide_level(level, stats_ptr, openlb_order);
+  if (!openlb_order) {
+    domain_bc_.apply(boundary_rho_stats(stats_ptr), average_rho_,
+                     use_const_rho_bgk_);
+  }
   ghosts_.exchange();
-  domain_bc_.apply();
   stream_level(level);
+  domain_bc_.apply_post_stream();
+  // OpenLB collectStatistics() runs after PostStream; stats are from collide only.
+  if (stats_ptr != nullptr) {
+    average_rho_ = rho_stats.average();
+  }
 
   if (level >= max_level_) {
     return;
@@ -135,6 +210,71 @@ inline void TimeLoop::advance(int level) {
 
 inline void TimeLoop::advance_one() {
   advance(0);
+}
+
+inline void TimeLoop::advance_one_flat_with_hooks(
+    const std::function<void(FlatPhase)>& hook) {
+  CollideRhoStats rho_stats;
+  CollideRhoStats* stats_ptr =
+      (use_const_rho_bgk_ && max_level_ >= 0) ? &rho_stats : nullptr;
+  collide_level(0, stats_ptr, /*openlb_spatial_collide_order=*/false);
+  if (hook) {
+    hook(FlatPhase::kAfterCollide);
+  }
+  domain_bc_.apply(boundary_rho_stats(stats_ptr), average_rho_,
+                   use_const_rho_bgk_);
+  if (hook) {
+    hook(FlatPhase::kAfterBoundaryCollide);
+  }
+  ghosts_.exchange();
+  if (hook) {
+    hook(FlatPhase::kAfterGhostExchange);
+  }
+  stream_level(0);
+  if (hook) {
+    hook(FlatPhase::kAfterStream);
+  }
+  domain_bc_.apply_post_stream();
+  if (stats_ptr != nullptr) {
+    average_rho_ = rho_stats.average();
+  }
+  if (hook) {
+    hook(FlatPhase::kAfterPostStream);
+  }
+}
+
+inline void TimeLoop::advance_one_with_hooks(
+    const std::function<void(FlatPhase)>& hook) {
+  CollideRhoStats rho_stats;
+  CollideRhoStats* stats_ptr =
+      (use_const_rho_bgk_ && max_level_ >= 0) ? &rho_stats : nullptr;
+  const bool openlb_order = domain_bc_.collide_boundary_before_bulk();
+  collide_level(0, stats_ptr, openlb_order);
+  if (hook) {
+    hook(FlatPhase::kAfterCollide);
+  }
+  if (!openlb_order) {
+    domain_bc_.apply(boundary_rho_stats(stats_ptr), average_rho_,
+                     use_const_rho_bgk_);
+    if (hook) {
+      hook(FlatPhase::kAfterBoundaryCollide);
+    }
+  }
+  ghosts_.exchange();
+  if (hook) {
+    hook(FlatPhase::kAfterGhostExchange);
+  }
+  stream_level(0);
+  if (hook) {
+    hook(FlatPhase::kAfterStream);
+  }
+  domain_bc_.apply_post_stream();
+  if (stats_ptr != nullptr) {
+    average_rho_ = rho_stats.average();
+  }
+  if (hook) {
+    hook(FlatPhase::kAfterPostStream);
+  }
 }
 
 }  // namespace octlb

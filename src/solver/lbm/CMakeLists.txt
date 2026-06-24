@@ -4,6 +4,7 @@ add_library(octlb_lbm STATIC
   domain_boundary_handler.cpp
   lattice_material_init.cpp
   level_coupler.cpp
+  unit_converter/unit_converter.cpp
 )
 
 target_include_directories(octlb_lbm

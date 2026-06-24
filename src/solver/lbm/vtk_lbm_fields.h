@@ -9,6 +9,33 @@
 
 namespace octlb {
 
+/** Samples LBM velocity (u) in physical units on interior cells. */
+template <typename T, typename DESCRIPTOR>
+class VtkPhysVelocityField {
+ public:
+  VtkPhysVelocityField(const BlockLattice<T, DESCRIPTOR>& lattice,
+                       const UnitConverter& converter)
+      : lattice_(lattice),
+        scale_(converter.char_phys_velocity() /
+               converter.char_lattice_velocity()) {}
+
+  std::string_view vtk_name() const { return "physVelocity"; }
+  int vtk_components() const { return 3; }
+
+  void sample_cell(int i, int j, int k, double* out) const {
+    T rho{};
+    T u[3]{};
+    lattice_.get(i, j, k).computeRhoU(rho, u);
+    for (int d = 0; d < 3; ++d) {
+      out[d] = static_cast<double>(u[d]) * scale_;
+    }
+  }
+
+ private:
+  const BlockLattice<T, DESCRIPTOR>& lattice_;
+  double scale_ = 1.0;
+};
+
 /** Samples LBM velocity (u) on interior cells for VTK CellData output. */
 template <typename T, typename DESCRIPTOR>
 class VtkVelocityField {
