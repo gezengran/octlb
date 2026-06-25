@@ -24,6 +24,7 @@ compile_commands.json
 CTestTestfile.cmake
 _deps/
 Testing/
+cmd.sh
 
 # Compiler / linker
 *.obj

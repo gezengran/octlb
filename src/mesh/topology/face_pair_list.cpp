@@ -124,7 +124,9 @@ int AssignCommTag(FaceBuildContext* ctx, uint64_t face_key) {
     return existing->second;
   }
 
-  int tag = static_cast<int>(Mix64(face_key) & 0x7FFFFFFF);
+  // int tag = static_cast<int>(Mix64(face_key) & 0x7FFFFFFF);
+  // 与 MPICH MPI_TAG_UB (0x3FFFFFFF) 对齐；OpenMPI 也兼容
+  int tag = static_cast<int>(Mix64(face_key) & 0x3FFFFFFF);
   if (tag <= 0) {
     tag = 1;
   }
