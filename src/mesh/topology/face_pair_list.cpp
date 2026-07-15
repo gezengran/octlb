@@ -3,24 +3,37 @@
 #include <algorithm>
 #include <cstdint>
 #include <stdexcept>
-#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
+#include <mpi.h>
 #include <p8est_bits.h>
 #include <p8est_iterate.h>
 
+#include "src/common/comm_tag_assigner.h"
 #include "src/mesh/forest/octree_forest.h"
 #include "src/mesh/forest/octree_forest_access.h"
 
 namespace octlb {
 namespace {
 
+// A pending tag fill: a face whose comm_tag must be written after the assigner
+// runs. Tags are assigned in a second phase (after p8est_iterate) so that, per
+// rank-pair, all faces are known and a symmetric sorted-index tag can be given.
+struct PendingTagFill {
+  uint64_t face_key;
+  enum Kind { kSameLevel, kCoarseFine } kind;
+  std::size_t record_index;  // index into same_level_ or coarse_fine_
+  int slot;                  // 0 for same-level; 0..3 for coarse-fine
+};
+
 struct FaceBuildContext {
   p8est_t* forest = nullptr;
   p8est_ghost_t* ghost = nullptr;
   int my_rank = 0;
-  std::unordered_map<uint64_t, int> comm_tag_by_face_key;
-  std::unordered_map<int, uint64_t> tag_owner;
+  int tag_ub = 0x3FFFFFFF;
+  CommTagAssigner* tagger = nullptr;
+  std::vector<PendingTagFill>* pending = nullptr;  // set by BuildFromForest
   std::unordered_set<uint64_t> cross_rank_face_keys;
   std::vector<SameLevelFace>* same_level = nullptr;
   std::vector<CoarseFineFace>* coarse_fine = nullptr;
@@ -107,6 +120,9 @@ uint64_t Mix64(uint64_t h) {
   return h;
 }
 
+// Canonical, symmetric key for a face shared by two quadrants. Both endpoints
+// of a cross-rank face compute the same value (operands are sorted), so the
+// key is usable as the per-rank-pair face identity for tag assignment.
 uint64_t CanonicalFaceKey(uint64_t ka, uint64_t kb, int face) {
   if (ka > kb) {
     std::swap(ka, kb);
@@ -118,47 +134,11 @@ uint64_t CanonicalFaceKey(uint64_t ka, uint64_t kb, int face) {
   return h;
 }
 
-int AssignCommTag(FaceBuildContext* ctx, uint64_t face_key) {
-  const auto existing = ctx->comm_tag_by_face_key.find(face_key);
-  if (existing != ctx->comm_tag_by_face_key.end()) {
-    return existing->second;
-  }
-
-  // int tag = static_cast<int>(Mix64(face_key) & 0x7FFFFFFF);
-  // 与 MPICH MPI_TAG_UB (0x3FFFFFFF) 对齐；OpenMPI 也兼容
-  int tag = static_cast<int>(Mix64(face_key) & 0x3FFFFFFF);
-  if (tag <= 0) {
-    tag = 1;
-  }
-  uint64_t salt = face_key;
-  while (ctx->tag_owner.count(tag) != 0 &&
-         ctx->tag_owner[tag] != face_key) {
-    salt = Mix64(salt ^ static_cast<uint64_t>(tag));
-    tag = static_cast<int>(salt & 0x7FFFFFFF);
-    if (tag <= 0) {
-      tag = 1;
-    }
-  }
-  ctx->tag_owner[tag] = face_key;
-  ctx->comm_tag_by_face_key.emplace(face_key, tag);
-  return tag;
-}
-
 uint64_t SymmetricFaceKey(const p8est_quadrant_t* qa,
                           const p8est_quadrant_t* qb, p4est_topidx_t tree_a,
                           p4est_topidx_t tree_b, int face) {
   return CanonicalFaceKey(QuadrantKey(tree_a, qa), QuadrantKey(tree_b, qb),
                           face);
-}
-
-int MakeSymmetricCommTag(FaceBuildContext* ctx, const p8est_quadrant_t* qa,
-                         const p8est_quadrant_t* qb, p4est_topidx_t tree_a,
-                         p4est_topidx_t tree_b, int face) {
-  if (qa == nullptr || qb == nullptr) {
-    return -1;
-  }
-  return AssignCommTag(ctx,
-                       SymmetricFaceKey(qa, qb, tree_a, tree_b, face));
 }
 
 bool SideHasLocalQuadrant(const FaceBuildContext& ctx,
@@ -173,6 +153,15 @@ bool SideHasLocalQuadrant(const FaceBuildContext& ctx,
     return false;
   }
   return side.is.full.quad != nullptr && side.is.full.is_ghost == 0;
+}
+
+// Register a face (key, peer) for tag assignment and record where its tag must
+// be written back in phase two.
+void RegisterFace(FaceBuildContext* ctx, uint64_t face_key, int peer_rank,
+                  PendingTagFill::Kind kind, std::size_t record_index,
+                  int slot) {
+  ctx->tagger->add_face(face_key, peer_rank);
+  ctx->pending->push_back({face_key, kind, record_index, slot});
 }
 
 void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
@@ -239,12 +228,6 @@ void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
       remote_id = id0;
       remote_rank = rank0;
     }
-    const int comm_tag = MakeSymmetricCommTag(
-        build, side0->is.full.quad, side1->is.full.quad, side0->treeid,
-        side1->treeid, side0->face);
-    if (comm_tag < 0) {
-      return;
-    }
     const uint64_t face_key = SymmetricFaceKey(
         side0->is.full.quad, side1->is.full.quad, side0->treeid,
         side1->treeid, side0->face);
@@ -254,11 +237,18 @@ void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
     }
     const FaceDir local_dir = static_cast<FaceDir>(local_side->face);
     const FaceDir remote_dir = static_cast<FaceDir>(remote_side->face);
+    const int peer_rank =
+        remote_rank != build->my_rank ? remote_rank : build->my_rank;
+
     build->same_level->push_back(
-        {local_id, local_dir, remote_id, remote_rank, comm_tag});
+        {local_id, local_dir, remote_id, remote_rank, /*comm_tag=*/0});
+    RegisterFace(build, face_key, peer_rank, PendingTagFill::kSameLevel,
+                 build->same_level->size() - 1, /*slot=*/0);
     if (remote_rank == build->my_rank) {
       build->same_level->push_back(
-          {remote_id, remote_dir, local_id, remote_rank, comm_tag});
+          {remote_id, remote_dir, local_id, remote_rank, /*comm_tag=*/0});
+      RegisterFace(build, face_key, peer_rank, PendingTagFill::kSameLevel,
+                   build->same_level->size() - 1, /*slot=*/0);
     }
     return;
   }
@@ -288,14 +278,45 @@ void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
   for (int i = 0; i < 4; ++i) {
     entry.fine_ids[i] = fine_ids[i];
     entry.remote_ranks[i] = remote_ranks[i];
-    entry.comm_tags[i] = MakeSymmetricCommTag(
-        build, coarse_side->is.full.quad, fine_side->is.hanging.quad[i],
-        coarse_side->treeid, fine_side->treeid, coarse_side->face);
+    entry.comm_tags[i] = 0;  // filled in phase two
   }
   build->coarse_fine->push_back(entry);
+  const std::size_t entry_index = build->coarse_fine->size() - 1;
+
+  const bool owns_coarse = SideHasLocalQuadrant(*build, *coarse_side);
+  for (int i = 0; i < 4; ++i) {
+    const uint64_t face_key_i = SymmetricFaceKey(
+        coarse_side->is.full.quad, fine_side->is.hanging.quad[i],
+        coarse_side->treeid, fine_side->treeid, coarse_side->face);
+    int peer_rank = -1;
+    if (owns_coarse) {
+      // Coarse side participates with every fine slot (peer = fine_i's rank).
+      peer_rank = remote_ranks[i];
+    } else if (fine_side->is.hanging.is_ghost[i] == 0) {
+      // Fine side: only the slots this rank owns (peer = coarse's rank).
+      peer_rank = coarse_rank;
+    }
+    if (peer_rank < 0) {
+      continue;  // not owned by this rank -> tag unused here, leave 0
+    }
+    RegisterFace(build, face_key_i, peer_rank, PendingTagFill::kCoarseFine,
+                 entry_index, i);
+  }
 }
 
-void BuildFromForest(const OctreeForest& forest, FaceBuildContext* ctx) {
+int QueryTagUb(MPI_Comm comm) {
+  int tag_ub = 0x3FFFFFFF;
+  int exists = 0;
+  int* value = nullptr;
+  if (MPI_Comm_get_attr(comm, MPI_TAG_UB, &value, &exists) == MPI_SUCCESS &&
+      exists && value != nullptr && *value > 0) {
+    tag_ub = *value;
+  }
+  return tag_ub;
+}
+
+void BuildFromForest(const OctreeForest& forest, FaceBuildContext* ctx,
+                     std::vector<PendingTagFill>* pending) {
   ctx->forest = MeshForestAccess::Forest(forest);
   ctx->ghost = MeshForestAccess::Ghost(forest);
   if (ctx->forest == nullptr) {
@@ -306,8 +327,25 @@ void BuildFromForest(const OctreeForest& forest, FaceBuildContext* ctx) {
         "FacePairList: ghost layer missing; call partition() first");
   }
   MPI_Comm_rank(ctx->forest->mpicomm, &ctx->my_rank);
+  ctx->tag_ub = QueryTagUb(ctx->forest->mpicomm);
+
+  CommTagAssigner tagger(ctx->tag_ub);
+  ctx->tagger = &tagger;
+  ctx->pending = pending;
   p8est_iterate(ctx->forest, ctx->ghost, ctx, nullptr, FaceCallback, nullptr,
                 nullptr);
+  ctx->tagger = nullptr;
+  ctx->pending = nullptr;
+
+  tagger.assign();
+  for (const PendingTagFill& p : *pending) {
+    const int tag = tagger.tag_for(p.face_key);
+    if (p.kind == PendingTagFill::kSameLevel) {
+      (*ctx->same_level)[p.record_index].comm_tag = tag;
+    } else {
+      (*ctx->coarse_fine)[p.record_index].comm_tags[p.slot] = tag;
+    }
+  }
 }
 
 }  // namespace
@@ -317,7 +355,8 @@ FacePairList::FacePairList(const OctreeForest& forest) {
   ctx.same_level = &same_level_;
   ctx.coarse_fine = &coarse_fine_;
   ctx.tree_boundary = &tree_boundary_;
-  BuildFromForest(forest, &ctx);
+  std::vector<PendingTagFill> pending;
+  BuildFromForest(forest, &ctx, &pending);
 }
 
 const std::vector<SameLevelFace>& FacePairList::same_level_faces() const {
@@ -340,7 +379,8 @@ void FacePairList::rebuild(const OctreeForest& forest) {
   ctx.same_level = &same_level_;
   ctx.coarse_fine = &coarse_fine_;
   ctx.tree_boundary = &tree_boundary_;
-  BuildFromForest(forest, &ctx);
+  std::vector<PendingTagFill> pending;
+  BuildFromForest(forest, &ctx, &pending);
 }
 
 }  // namespace octlb

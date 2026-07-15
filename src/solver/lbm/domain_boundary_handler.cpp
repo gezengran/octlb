@@ -5,6 +5,7 @@
 #include "dynamics/lbm.h"
 #include "src/solver/lbm/boundary/bounce_back.h"
 #include "src/solver/lbm/boundary/interpolated_velocity.h"
+#include "src/solver/lbm/boundary/outflow_bc.h"
 #include "src/solver/lbm/boundary/zou_he_velocity.h"
 
 namespace octlb {
@@ -58,9 +59,10 @@ void ConcreteDomainBoundaryHandler::ApplyLegacyFaceBc(
           const double* interior = lat.populations_at_halo(1, iy + 1, iz + 1);
           if (spec.type == DomainBcType::kNoSlip) {
             boundary::ApplyNoSlipGhost<double, Descriptor>(ghost, interior);
+          } else if (spec.type == DomainBcType::kOutflow) {
+            boundary::ApplyOutflowGhost<double, Descriptor>(ghost, interior);
           } else {
-            boundary::ApplyZouHeVelocityGhost<double, Descriptor>(
-                ghost, interior, face, spec.u_wall.data());
+            ApplyVelocityGhost(spec, /*ix=*/0, iy, iz, ghost, interior, face);
           }
         }
       }
@@ -73,9 +75,11 @@ void ConcreteDomainBoundaryHandler::ApplyLegacyFaceBc(
               lat.populations_at_halo(nx_, iy + 1, iz + 1);
           if (spec.type == DomainBcType::kNoSlip) {
             boundary::ApplyNoSlipGhost<double, Descriptor>(ghost, interior);
+          } else if (spec.type == DomainBcType::kOutflow) {
+            boundary::ApplyOutflowGhost<double, Descriptor>(ghost, interior);
           } else {
-            boundary::ApplyZouHeVelocityGhost<double, Descriptor>(
-                ghost, interior, face, spec.u_wall.data());
+            ApplyVelocityGhost(spec, /*ix=*/nx_ - 1, iy, iz, ghost, interior,
+                               face);
           }
         }
       }
@@ -87,9 +91,10 @@ void ConcreteDomainBoundaryHandler::ApplyLegacyFaceBc(
           const double* interior = lat.populations_at_halo(ix + 1, 1, iz + 1);
           if (spec.type == DomainBcType::kNoSlip) {
             boundary::ApplyNoSlipGhost<double, Descriptor>(ghost, interior);
+          } else if (spec.type == DomainBcType::kOutflow) {
+            boundary::ApplyOutflowGhost<double, Descriptor>(ghost, interior);
           } else {
-            boundary::ApplyZouHeVelocityGhost<double, Descriptor>(
-                ghost, interior, face, spec.u_wall.data());
+            ApplyVelocityGhost(spec, ix, /*iy=*/0, iz, ghost, interior, face);
           }
         }
       }
@@ -101,9 +106,11 @@ void ConcreteDomainBoundaryHandler::ApplyLegacyFaceBc(
           const double* interior = lat.populations_at_halo(ix + 1, ny_, iz + 1);
           if (spec.type == DomainBcType::kNoSlip) {
             boundary::ApplyNoSlipGhost<double, Descriptor>(ghost, interior);
+          } else if (spec.type == DomainBcType::kOutflow) {
+            boundary::ApplyOutflowGhost<double, Descriptor>(ghost, interior);
           } else {
-            boundary::ApplyZouHeVelocityGhost<double, Descriptor>(
-                ghost, interior, face, spec.u_wall.data());
+            ApplyVelocityGhost(spec, ix, /*iy=*/ny_ - 1, iz, ghost, interior,
+                               face);
           }
         }
       }
@@ -115,9 +122,10 @@ void ConcreteDomainBoundaryHandler::ApplyLegacyFaceBc(
           const double* interior = lat.populations_at_halo(ix + 1, iy + 1, 1);
           if (spec.type == DomainBcType::kNoSlip) {
             boundary::ApplyNoSlipGhost<double, Descriptor>(ghost, interior);
+          } else if (spec.type == DomainBcType::kOutflow) {
+            boundary::ApplyOutflowGhost<double, Descriptor>(ghost, interior);
           } else {
-            boundary::ApplyZouHeVelocityGhost<double, Descriptor>(
-                ghost, interior, face, spec.u_wall.data());
+            ApplyVelocityGhost(spec, ix, iy, /*iz=*/0, ghost, interior, face);
           }
         }
       }
@@ -129,14 +137,25 @@ void ConcreteDomainBoundaryHandler::ApplyLegacyFaceBc(
           const double* interior = lat.populations_at_halo(ix + 1, iy + 1, nz_);
           if (spec.type == DomainBcType::kNoSlip) {
             boundary::ApplyNoSlipGhost<double, Descriptor>(ghost, interior);
+          } else if (spec.type == DomainBcType::kOutflow) {
+            boundary::ApplyOutflowGhost<double, Descriptor>(ghost, interior);
           } else {
-            boundary::ApplyZouHeVelocityGhost<double, Descriptor>(
-                ghost, interior, face, spec.u_wall.data());
+            ApplyVelocityGhost(spec, ix, iy, /*iz=*/nz_ - 1, ghost, interior,
+                               face);
           }
         }
       }
       break;
   }
+}
+
+void ConcreteDomainBoundaryHandler::ApplyVelocityGhost(
+    const DomainBcSpec& spec, int ix, int iy, int iz, double* ghost,
+    const double* interior, int face) {
+  double u[3] = {};
+  PrescribedVelocity(spec, ix, iy, iz, current_time_, u);
+  boundary::ApplyZouHeVelocityGhost<double, Descriptor>(ghost, interior, face,
+                                                         u);
 }
 
 void ConcreteDomainBoundaryHandler::apply(CollideRhoStats* rho_stats,

@@ -42,5 +42,20 @@ TEST(StlReaderTest, BinaryTriangle_ParsesCountNormalAndBBox) {
   ExpectSingleZUpTriangle(soup);
 }
 
+// W1 (T11) cylinder fixture: a closed cylinder (axis along z, R=0.5, H=1.0,
+// 16 segments) used by the cylinder3d case. Verify it parses with the expected
+// triangle count and bounding box.
+TEST(StlReaderTest, Cylinder_ParsesCountAndBBox) {
+  const TriangleSoup soup = read_stl_file(MeshDataPath("cylinder.stl"));
+  EXPECT_EQ(soup.triangles().size(), 64u);
+  const BoundingBox& bb = soup.bounding_box();
+  EXPECT_NEAR(bb.x_min, -0.5, 1e-4);
+  EXPECT_NEAR(bb.x_max, 0.5, 1e-4);
+  EXPECT_NEAR(bb.y_min, -0.5, 1e-4);
+  EXPECT_NEAR(bb.y_max, 0.5, 1e-4);
+  EXPECT_NEAR(bb.z_min, 0.0, 1e-4);
+  EXPECT_NEAR(bb.z_max, 1.0, 1e-4);
+}
+
 }  // namespace
 }  // namespace octlb

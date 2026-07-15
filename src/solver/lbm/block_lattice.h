@@ -175,6 +175,10 @@ class BlockLattice {
 
   static int face_buffer_count(int nx, int ny, int nz, FaceDir dir);
 
+  // ② edge-ghost: an edge is the intersection of two orthogonal faces. The edge
+  // line runs along the third axis; buffer length is that axis's cell count.
+  static int edge_buffer_count(int nx, int ny, int nz, FaceDir d1, FaceDir d2);
+
   // Set every interior cell to the Maxwell equilibrium for (rho0, u0).
   void initialize(T rho0, const T* u0);
 
@@ -218,6 +222,11 @@ class BlockLattice {
   void pack_face(FaceDir dir, T* buffer, int count) const;
   void unpack_face(FaceDir dir, const T* buffer, int count);
   void read_ghost_face(FaceDir dir, T* buffer, int count) const;
+
+  // ② edge-ghost line: pack reads the interior edge line (N cells along the
+  // third axis at the d1,d2 corner); unpack writes the edge ghost line.
+  void pack_edge(FaceDir d1, FaceDir d2, T* buffer, int count) const;
+  void unpack_edge(FaceDir d1, FaceDir d2, const T* buffer, int count);
 
   // Cell proxy at physical coordinates (0-based, interior only).
   CellProxy<T, DESCRIPTOR> get(int ix, int iy, int iz);

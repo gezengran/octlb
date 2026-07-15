@@ -193,6 +193,75 @@ void BlockLattice<T, DESCRIPTOR>::unpack_face(FaceDir dir, const T* buffer,
   }
 }
 
+// ② edge-ghost: an edge is the intersection of two orthogonal faces. The edge
+// line runs along the third axis (0+1+2 == 3); buffer length is that axis's
+// cell count times Q (in elements, matching face_buffer_count's convention).
+template <typename T, typename DESCRIPTOR>
+int BlockLattice<T, DESCRIPTOR>::edge_buffer_count(int nx, int ny, int nz,
+                                                    FaceDir d1, FaceDir d2) {
+  const int a1 = static_cast<int>(d1) / 2;
+  const int a2 = static_cast<int>(d2) / 2;
+  const int a3 = 3 - a1 - a2;
+  const int n[3] = {nx, ny, nz};
+  return n[a3] * DESCRIPTOR::q;
+}
+
+template <typename T, typename DESCRIPTOR>
+void BlockLattice<T, DESCRIPTOR>::pack_edge(FaceDir d1, FaceDir d2, T* buffer,
+                                             int count) const {
+  const int expected = edge_buffer_count(nx_, ny_, nz_, d1, d2);
+  if (count < expected) {
+    throw std::runtime_error("BlockLattice::pack_edge: buffer too small");
+  }
+  const int a1 = static_cast<int>(d1) / 2;
+  const int a2 = static_cast<int>(d2) / 2;
+  const int a3 = 3 - a1 - a2;
+  const bool max1 = (static_cast<int>(d1) & 1) == 1;
+  const bool max2 = (static_cast<int>(d2) & 1) == 1;
+  const int nper[3] = {nx_, ny_, nz_};
+  const int f1 = (max1 ? nper[a1] - 1 : 0) + h_;  // interior edge corner
+  const int f2 = (max2 ? nper[a2] - 1 : 0) + h_;
+  int out = 0;
+  for (int k = 0; k < nper[a3]; ++k) {
+    int hc[3];
+    hc[a1] = f1;
+    hc[a2] = f2;
+    hc[a3] = k + h_;
+    const int base = halo_idx(hc[0], hc[1], hc[2]);
+    for (int iPop = 0; iPop < kQ; ++iPop) {
+      buffer[out++] = populations_[base + iPop];
+    }
+  }
+}
+
+template <typename T, typename DESCRIPTOR>
+void BlockLattice<T, DESCRIPTOR>::unpack_edge(FaceDir d1, FaceDir d2,
+                                              const T* buffer, int count) {
+  const int expected = edge_buffer_count(nx_, ny_, nz_, d1, d2);
+  if (count < expected) {
+    throw std::runtime_error("BlockLattice::unpack_edge: buffer too small");
+  }
+  const int a1 = static_cast<int>(d1) / 2;
+  const int a2 = static_cast<int>(d2) / 2;
+  const int a3 = 3 - a1 - a2;
+  const bool max1 = (static_cast<int>(d1) & 1) == 1;
+  const bool max2 = (static_cast<int>(d2) & 1) == 1;
+  const int nper[3] = {nx_, ny_, nz_};
+  const int g1 = max1 ? nper[a1] + h_ : h_ - 1;  // edge ghost corner
+  const int g2 = max2 ? nper[a2] + h_ : h_ - 1;
+  int in = 0;
+  for (int k = 0; k < nper[a3]; ++k) {
+    int hc[3];
+    hc[a1] = g1;
+    hc[a2] = g2;
+    hc[a3] = k + h_;
+    const int base = halo_idx(hc[0], hc[1], hc[2]);
+    for (int iPop = 0; iPop < kQ; ++iPop) {
+      populations_[base + iPop] = buffer[in++];
+    }
+  }
+}
+
 template <typename T, typename DESCRIPTOR>
 BlockLattice<T, DESCRIPTOR>::BlockLattice(int nx, int ny, int nz, int halo)
     : nx_(nx), ny_(ny), nz_(nz), h_(halo),

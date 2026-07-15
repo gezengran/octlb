@@ -92,6 +92,9 @@ class TimeLoop {
   ConstRhoStatsScope const_rho_stats_scope_;
   double average_rho_;
   int max_level_;
+  // 0-based coarse-step counter threaded to the boundary handler as time (for
+  // inlet velocity ramp-up). OpenLB iT semantics: the first step uses t=0.
+  int step_ = 0;
 
   CollideRhoStats* boundary_rho_stats(CollideRhoStats* fluid_stats) const {
     if (fluid_stats == nullptr) {
@@ -142,6 +145,7 @@ inline void TimeLoop::reset_counters() {
   std::fill(counters_.collide.begin(), counters_.collide.end(), 0);
   std::fill(counters_.stream.begin(), counters_.stream.end(), 0);
   counters_.coupler_calls.clear();
+  step_ = 0;
 }
 
 inline void TimeLoop::collide_level(int level, CollideRhoStats* rho_stats,
@@ -209,7 +213,9 @@ inline void TimeLoop::advance(int level) {
 }
 
 inline void TimeLoop::advance_one() {
+  domain_bc_.set_time(static_cast<double>(step_));
   advance(0);
+  ++step_;
 }
 
 inline void TimeLoop::advance_one_flat_with_hooks(

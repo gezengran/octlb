@@ -2,12 +2,14 @@
 #define OCTLB_SRC_SOLVER_LBM_DOMAIN_BOUNDARY_HANDLER_H_
 
 #include <array>
+#include <memory>
 #include <vector>
 
 #include "src/common/types.h"
 #include "src/mesh/topology/face_pair_list.h"
 #include "src/solver/field/block_collection.h"
 #include "src/solver/lbm/block_lattice.h"
+#include "src/solver/lbm/boundary/inlet_velocity_field.h"
 
 namespace octlb {
 
@@ -15,6 +17,7 @@ enum class DomainBcType {
   kNoSlip,
   kMovingLid,
   kInterpolatedVelocity,
+  kOutflow,  // Zero-gradient (do-nothing) outflow BC (W1, T11).
 };
 
 // InterpolatedVelocity overlap padding fill before PlaneFd (PostStream stage).
@@ -28,7 +31,25 @@ struct DomainBcSpec {
   FaceDir face = FaceDir::kXMin;
   DomainBcType type = DomainBcType::kNoSlip;
   std::array<double, 3> u_wall{{0.0, 0.0, 0.0}};
+  // Optional per-cell, time-dependent inlet velocity. When set, velocity-type
+  // faces (kInterpolatedVelocity / kMovingLid) prescribe u per cell from the
+  // field instead of the constant u_wall. Empty -> backward compatible.
+  std::shared_ptr<boundary::InletVelocityField> inlet_field;
 };
+
+// Per-cell prescribed velocity for a BC spec: the inlet_field's value at
+// (ix, iy, iz, t) when set, otherwise the constant u_wall. Single source for
+// both the legacy Zou-He and the InterpolatedVelocity BC paths.
+inline void PrescribedVelocity(const DomainBcSpec& spec, int ix, int iy,
+                               int iz, double t, double u[3]) {
+  if (spec.inlet_field) {
+    spec.inlet_field->velocity(ix, iy, iz, t, u);
+    return;
+  }
+  for (int d = 0; d < 3; ++d) {
+    u[d] = spec.u_wall[d];
+  }
+}
 
 class DomainBoundaryHandler {
  public:
@@ -45,6 +66,13 @@ class DomainBoundaryHandler {
   virtual void collide_interleaved_with(
       BlockLattice<double, olb::descriptors::D3Q19<>>& lat,
       CollideRhoStats* rho_stats, double average_rho, bool use_const_rho_bgk) {}
+  // Current simulation time (lattice steps when threaded from TimeLoop). Used
+  // by inlet velocity fields for ramp-up. Default 0 -> no ramp effect.
+  void set_time(double t) { current_time_ = t; }
+  double current_time() const { return current_time_; }
+
+ protected:
+  double current_time_ = 0.0;
 };
 
 class NoOpDomainBoundaryHandler : public DomainBoundaryHandler {
@@ -77,6 +105,9 @@ class ConcreteDomainBoundaryHandler : public DomainBoundaryHandler {
  private:
   void ApplyLegacyFaceBc(DomainBoundaryLattice& lat, FaceDir dir,
                          const DomainBcSpec& spec);
+  // Per-cell velocity ghost fill: PrescribedVelocity(spec, ix,iy,iz,t) -> Zou-He.
+  void ApplyVelocityGhost(const DomainBcSpec& spec, int ix, int iy, int iz,
+                          double* ghost, const double* interior, int face);
   bool UsesInterpolatedVelocity() const;
 
   BlockCollection<DomainBoundaryLattice>& blocks_;

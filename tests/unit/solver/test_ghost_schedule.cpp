@@ -44,6 +44,20 @@ struct DummyBlock {
     ghost_[static_cast<int>(dir)].assign(buf, buf + count);
   }
 
+  // ② edge-ghost (test double). No test inspects edge ghosts on DummyBlock, so
+  // unpack discards; pack emits a signature so the exchange path is exercised.
+  static int edge_buffer_count(int nx, int ny, int nz, FaceDir d1, FaceDir d2) {
+    return EdgeBufferCount(nx, ny, nz, d1, d2);
+  }
+  void pack_edge(FaceDir d1, FaceDir d2, int* buf, int count) const {
+    for (int i = 0; i < count; ++i) {
+      buf[i] = id * 100000 + static_cast<int>(d1) * 1000 +
+               static_cast<int>(d2) * 10 + i;
+    }
+  }
+  void unpack_edge(FaceDir /*d1*/, FaceDir /*d2*/, const int* /*buf*/,
+                   int /*count*/) {}
+
   const std::vector<int>& ghost(FaceDir dir) const {
     return ghost_[static_cast<int>(dir)];
   }
