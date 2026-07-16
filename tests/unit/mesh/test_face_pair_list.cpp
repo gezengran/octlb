@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 #include <mpi.h>
 
+#include <algorithm>
 #include <cmath>
+#include <vector>
 
 #include "src/common/bounding_box.h"
 #include "src/mesh/forest/octree_forest.h"
@@ -137,6 +139,58 @@ TEST(FacePairList, CrossRankFacesShareSymmetricCommTag) {
     }
     EXPECT_GT(face.comm_tag, 0);
   }
+}
+
+// Stronger symmetry guard (requires exactly 2 ranks): the two ranks sharing a
+// partition boundary must assign the SAME multiset of comm_tags for their
+// cross-rank same-level faces (per-rank-pair sorted-index tags are symmetric
+// and unique). Run via the test_face_pair_list_symmetry_mpi2 ctest entry.
+TEST(FacePairList, CrossRankTagsAgreeBetweenRanks) {
+  int rank = 0;
+  int size = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  if (size != 2) {
+    GTEST_SKIP() << "requires exactly 2 ranks";
+  }
+
+  OctreeForest forest(MPI_COMM_WORLD, UnitCubeDomain());
+  forest.refine([](OctantId) { return true; }, 2);  // 64 octants -> boundary
+  forest.balance();
+  forest.partition();
+
+  const FacePairList pairs(forest);
+  std::vector<int> tags;
+  for (const SameLevelFace& face : pairs.same_level_faces()) {
+    if (face.remote_rank != rank) {  // cross-rank
+      tags.push_back(face.comm_tag);
+    }
+  }
+  std::sort(tags.begin(), tags.end());
+  ASSERT_FALSE(tags.empty()) << "no cross-rank faces; partition too coarse";
+
+  // Per-pair uniqueness: no duplicate comm_tag on this rank.
+  for (std::size_t i = 1; i < tags.size(); ++i) {
+    ASSERT_NE(tags[i], tags[i - 1]) << "duplicate cross-rank comm_tag on rank "
+                                    << rank;
+  }
+
+  // Symmetry: the peer rank assigns the same multiset of tags for the same
+  // shared faces. Exchange counts, then the sorted tag vectors.
+  const int peer = 1 - rank;
+  int my_count = static_cast<int>(tags.size());
+  int peer_count = 0;
+  MPI_Sendrecv(&my_count, 1, MPI_INT, peer, 0, &peer_count, 1, MPI_INT, peer, 0,
+               MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+  ASSERT_EQ(my_count, peer_count)
+      << "cross-rank face count differs between ranks";
+
+  std::vector<int> other(static_cast<std::size_t>(peer_count), 0);
+  MPI_Sendrecv(tags.data(), my_count, MPI_INT, peer, 1, other.data(),
+               peer_count, MPI_INT, peer, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+  std::sort(other.begin(), other.end());
+  EXPECT_EQ(tags, other)
+      << "cross-rank comm_tag multiset differs between ranks";
 }
 
 }  // namespace octlb

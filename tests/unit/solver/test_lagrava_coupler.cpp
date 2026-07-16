@@ -365,16 +365,32 @@ TEST(LagravaCoupler, CoarseFine_CommTagsUnique) {
   int my_rank = 0;
   MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
 
+  // Only slots this rank actually exchanges over MPI need a valid, unique tag
+  // (LevelCoupler reads comm_tags[slot] solely for these). A coarse-owning rank
+  // uses every slot with peer = remote_ranks[i] (cross-rank when fine_i is
+  // remote); a fine-owning rank uses only its owned slot (fine_i local) with
+  // peer = coarse_remote_rank. Non-owned slots are not exchanged here, so their
+  // comm_tag is unused and left 0 by FacePairList.
   std::set<std::pair<int, int>> tags;
   for (const CoarseFineFace& face : pairs.coarse_fine_faces()) {
+    const bool owns_coarse = face.coarse_remote_rank == my_rank;
     for (int i = 0; i < 4; ++i) {
-      if (face.remote_ranks[i] == my_rank) {
-        continue;
+      int peer = -1;
+      if (owns_coarse) {
+        if (face.remote_ranks[i] == my_rank) {
+          continue;  // same-rank coarse-fine, no MPI
+        }
+        peer = face.remote_ranks[i];
+      } else {
+        if (face.remote_ranks[i] != my_rank) {
+          continue;  // fine_i not owned by this rank -> slot unused here
+        }
+        peer = face.coarse_remote_rank;  // != my_rank since coarse is a ghost
       }
       EXPECT_GT(face.comm_tags[i], 0);
-      const std::pair<int, int> key{face.remote_ranks[i], face.comm_tags[i]};
+      const std::pair<int, int> key{peer, face.comm_tags[i]};
       EXPECT_TRUE(tags.insert(key).second)
-          << "duplicate coarse-fine comm tag on rank " << my_rank;
+          << "duplicate coarse-fine comm tag (peer,tag) on rank " << my_rank;
     }
   }
 }

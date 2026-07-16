@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "src/common/types.h"
-#include "src/solver/lbm/cell_kind.h"
+#include "src/solver/lbm/bc_kind.h"
 
 namespace octlb {
 
@@ -175,6 +175,10 @@ class BlockLattice {
 
   static int face_buffer_count(int nx, int ny, int nz, FaceDir dir);
 
+  // ② edge-ghost: an edge is the intersection of two orthogonal faces. The edge
+  // line runs along the third axis; buffer length is that axis's cell count.
+  static int edge_buffer_count(int nx, int ny, int nz, FaceDir d1, FaceDir d2);
+
   // Set every interior cell to the Maxwell equilibrium for (rho0, u0).
   void initialize(T rho0, const T* u0);
 
@@ -203,8 +207,8 @@ class BlockLattice {
   void set_octant_id(OctantId id) { octant_id_ = id; }
   OctantId octant_id() const { return octant_id_; }
 
-  void set_cell_kind(int ix, int iy, int iz, CellKind kind);
-  CellKind cell_kind(int ix, int iy, int iz) const;
+  void set_bc_kind(int ix, int iy, int iz, BcKind kind);
+  BcKind bc_kind(int ix, int iy, int iz) const;
 
   // Halo coordinates: hx in [0, nx+2*h_), hy, hz likewise.
   T* populations_at_halo(int hx, int hy, int hz);
@@ -218,6 +222,11 @@ class BlockLattice {
   void pack_face(FaceDir dir, T* buffer, int count) const;
   void unpack_face(FaceDir dir, const T* buffer, int count);
   void read_ghost_face(FaceDir dir, T* buffer, int count) const;
+
+  // ② edge-ghost line: pack reads the interior edge line (N cells along the
+  // third axis at the d1,d2 corner); unpack writes the edge ghost line.
+  void pack_edge(FaceDir d1, FaceDir d2, T* buffer, int count) const;
+  void unpack_edge(FaceDir d1, FaceDir d2, const T* buffer, int count);
 
   // Cell proxy at physical coordinates (0-based, interior only).
   CellProxy<T, DESCRIPTOR> get(int ix, int iy, int iz);
@@ -274,7 +283,7 @@ class BlockLattice {
   int nx_, ny_, nz_, h_;
   std::vector<T> populations_;
   std::vector<T> stream_tmp_;
-  std::vector<CellKind> cell_kinds_;
+  std::vector<BcKind> bc_kinds_;
   const BouzidiLinkData* bouzidi_ = nullptr;
   OctantId octant_id_ = 0;
   OverlapPaddingCollideMode overlap_padding_collide_mode_ =

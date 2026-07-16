@@ -10,6 +10,7 @@
 #include "src/solver/field/block_collection.h"
 #include "src/solver/lbm/block_lattice.h"
 #include "src/solver/lbm/boundary/bouzidi_pull.h"
+#include "src/solver/lbm/bc_installer.h"
 #include "src/solver/lbm/bouzidi_link_data.h"
 #include "src/solver/lbm/lattice_material_init.h"
 #include "tests/unit/mesh/geometry_fixtures.h"
@@ -67,17 +68,7 @@ GeometryAssembly WallAtMidXAssembly() {
   return assembly;
 }
 
-CellKind MaterialToCellKind(MaterialKind mk) {
-  switch (mk) {
-    case MaterialKind::kFluid:
-      return CellKind::kFluid;
-    case MaterialKind::kSolid:
-      return CellKind::kSolid;
-    case MaterialKind::kBoundary:
-      return CellKind::kBoundary;
-  }
-  return CellKind::kFluid;
-}
+BcKind MaterialToBcKind(MaterialKind mk) { return bc::BcKindFromMaterial(mk); }
 
 }  // namespace
 
@@ -119,7 +110,7 @@ TEST(BouzidiLink, Stream_BouzidiReplacesSolidPull) {
   for (int k = 0; k < kN; ++k) {
     for (int j = 0; j < kN; ++j) {
       for (int i = kN / 2; i < kN; ++i) {
-        lat.set_cell_kind(i, j, k, CellKind::kSolid);
+        lat.set_bc_kind(i, j, k, BcKind::kSolid);
       }
     }
   }
@@ -149,7 +140,7 @@ TEST(BouzidiLink, Stream_BouzidiReplacesSolidPull) {
   for (int k = 0; k < kN; ++k) {
     for (int j = 0; j < kN; ++j) {
       for (int ii = kN / 2; ii < kN; ++ii) {
-        lat.set_cell_kind(ii, j, k, CellKind::kSolid);
+        lat.set_bc_kind(ii, j, k, BcKind::kSolid);
       }
     }
   }
@@ -187,8 +178,8 @@ TEST(BouzidiLink, MaterialField_MapsCellKind) {
     for (int k = 0; k < field.nz(); ++k) {
       for (int j = 0; j < field.ny(); ++j) {
         for (int i = 0; i < field.nx(); ++i) {
-          EXPECT_EQ(lat.cell_kind(i, j, k),
-                    MaterialToCellKind(field.at(id, i, j, k)));
+          EXPECT_EQ(lat.bc_kind(i, j, k),
+                    MaterialToBcKind(field.at(id, i, j, k)));
         }
       }
     }

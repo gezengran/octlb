@@ -33,6 +33,7 @@ doc/
 | 文件 | 说明 |
 |------|------|
 | [tasks/T10-cavity3d.md](tasks/T10-cavity3d.md) | T10：unit_converter + cavity3d（W1/W2/W3，已完成） |
+| [tasks/T11-cylinder3d.md](tasks/T11-cylinder3d.md) | T11：cylinder3d（P0 修 ①–⑤ + W1–W4，oracle 三阶 sanity→量级→Cd<1%，进行中） |
 
 **后续可增示例**
 

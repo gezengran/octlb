@@ -5,7 +5,7 @@
 
 #include "src/solver/lbm/block_lattice.h"
 #include "src/solver/lbm/boundary/interpolated_velocity.h"
-#include "src/solver/lbm/cell_kind.h"
+#include "src/solver/lbm/bc_kind.h"
 #include "src/solver/lbm/domain_boundary_handler.h"
 
 namespace octlb {
@@ -41,7 +41,7 @@ Lattice MakeInitializedBoundaryLattice(int n, int halo = 1) {
   Lattice lat(n, n, n, halo);
   const std::array<T, 3> u0{T{0}, T{0}, T{0}};
   lat.initialize(T{1}, u0.data());
-  boundary::MarkDomainBoundaryCellKinds(lat, n, n, n);
+  boundary::MarkDomainBoundaryBcKinds(lat, n, n, n);
   return lat;
 }
 
@@ -63,7 +63,7 @@ TEST(InterpolatedVelocityComputeRho, CornerEdge_Equilibrium_ReturnsOneNotRawSum)
     const int ix = xyz[0];
     const int iy = xyz[1];
     const int iz = xyz[2];
-    ASSERT_EQ(lat.cell_kind(ix, iy, iz), CellKind::kBoundary);
+    ASSERT_EQ(lat.bc_kind(ix, iy, iz), BcKind::kVelocityDirichlet);
     EXPECT_GE(boundary::detail::BoundaryFaceCount(ix, iy, iz, kN, kN, kN), 2)
         << "cell (" << ix << ',' << iy << ',' << iz << ")";
 
@@ -156,6 +156,58 @@ TEST(InterpolatedVelocityComputeRho, CavityEdgeCell_02930_EquilibriumRhoOne) {
   EXPECT_NEAR(raw_sum, T{0}, 1e-14);
 
   EXPECT_NEAR(view.ComputeRho(kIx, kIy, kIz), T{1}, 1e-14);
+}
+
+// R2: pressure outlet (kPressureDirichlet, p=0). With a known uniform interior
+// field (rho=1, u=(u0,0,0)) and the outlet face stamped kPressureDirichlet,
+// PostStream reconstruction must reset the outlet cell to rho==1.0 (p=0) and
+// u extrapolated from the interior (== interior u for a uniform field). The
+// cell is perturbed first so the reconstruction is observable.
+TEST(InterpolatedVelocityComputeRho, Outlet_PressureZero_ReconstructsRhoOneAndInteriorU) {
+  constexpr int kN = 8;
+  constexpr double kU0 = 0.05;
+  Lattice lat(kN, kN, kN, 1);
+  {
+    const double u0[3] = {kU0, 0.0, 0.0};
+    lat.initialize(1.0, u0);
+  }
+  // Stamp the whole +x (outlet) face as kPressureDirichlet so tangential
+  // neighbors are also pressure cells and extrapolate from the interior.
+  for (int iy = 0; iy < kN; ++iy) {
+    for (int iz = 0; iz < kN; ++iz) {
+      lat.set_bc_kind(kN - 1, iy, iz, BcKind::kPressureDirichlet);
+    }
+  }
+
+  DomainBcSpec spec;
+  spec.face = FaceDir::kXMax;
+  spec.type = DomainBcType::kInterpolatedPressure;
+  spec.rho_target = 1.0;  // p = 0
+  const std::vector<DomainBcSpec> specs = {spec};
+  boundary::detail::BoundaryLatticeView<T, Descriptor, Lattice> view(
+      lat, kN, kN, kN, specs);
+
+  // Perturb the outlet cell off the target so reconstruction is observable.
+  constexpr int kIx = kN - 1;
+  constexpr int kIy = kN / 2;
+  constexpr int kIz = kN / 2;
+  auto cell = lat.get(kIx, kIy, kIz);
+  for (int iPop = 0; iPop < Descriptor::q; ++iPop) {
+    cell[iPop] = T{0.02} * static_cast<T>(iPop) - T{0.18};  // arbitrary non-eq
+  }
+
+  boundary::detail::ApplyPlaneFdBoundary<T, Descriptor>(
+      view, &lat.get(kIx, kIy, kIz)[0], kIx, kIy, kIz,
+      /*direction=*/0, /*orientation=*/1, /*omega=*/1.0);
+
+  cell = lat.get(kIx, kIy, kIz);
+  T rho = T{0};
+  T u[Descriptor::d]{};
+  cell.computeRhoU(rho, u);
+  EXPECT_NEAR(rho, T{1}, 1e-12) << "pressure outlet must prescribe rho=1 (p=0)";
+  EXPECT_NEAR(u[0], kU0, 1e-12) << "outlet u must extrapolate the interior u";
+  EXPECT_NEAR(u[1], T{0}, 1e-12);
+  EXPECT_NEAR(u[2], T{0}, 1e-12);
 }
 
 }  // namespace

@@ -178,6 +178,57 @@ add_test(NAME test_lattice_cell_kind
     $<TARGET_FILE:test_lattice_cell_kind>
 )
 
+add_executable(test_bc_dispatcher
+  test_bc_dispatcher.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
+
+target_compile_features(test_bc_dispatcher PRIVATE cxx_std_20)
+
+target_link_libraries(test_bc_dispatcher
+  PRIVATE
+    octlb_lbm
+    octlb_mesh
+    GTest::gtest
+    MPI::MPI_CXX
+)
+
+add_test(NAME test_bc_dispatcher
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 1
+    --oversubscribe
+    $<TARGET_FILE:test_bc_dispatcher>
+)
+
+add_executable(test_bc_installer
+  test_bc_installer.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
+
+target_compile_features(test_bc_installer PRIVATE cxx_std_20)
+
+target_include_directories(test_bc_installer
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(test_bc_installer
+  PRIVATE
+    octlb_lbm
+    octlb_mesh
+    GTest::gtest
+    MPI::MPI_CXX
+)
+
+add_test(NAME test_bc_installer
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 1
+    --oversubscribe
+    $<TARGET_FILE:test_bc_installer>
+)
+
 add_executable(test_domain_boundary
   test_domain_boundary.cpp
   ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
@@ -216,6 +267,43 @@ target_link_libraries(test_interpolated_velocity_compute_rho
 add_test(NAME test_interpolated_velocity_compute_rho
   COMMAND test_interpolated_velocity_compute_rho)
 
+add_executable(test_drag_postprocessor
+  test_drag_postprocessor.cpp
+)
+
+target_compile_features(test_drag_postprocessor PRIVATE cxx_std_20)
+
+target_link_libraries(test_drag_postprocessor
+  PRIVATE
+    octlb_lbm
+    GTest::gtest_main
+)
+
+add_test(NAME test_drag_postprocessor COMMAND test_drag_postprocessor)
+
+add_executable(test_outlet_bc
+  test_outlet_bc.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
+
+target_compile_features(test_outlet_bc PRIVATE cxx_std_20)
+
+target_link_libraries(test_outlet_bc
+  PRIVATE
+    octlb_lbm
+    octlb_field
+    GTest::gtest
+    MPI::MPI_CXX
+)
+
+add_test(NAME test_outlet_bc
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 1
+    --oversubscribe
+    $<TARGET_FILE:test_outlet_bc>
+)
+
 add_executable(test_bouzidi_link
   test_bouzidi_link.cpp
   ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
@@ -242,6 +330,41 @@ add_test(NAME test_bouzidi_link
     ${MPIEXEC_NUMPROC_FLAG} 1
     --oversubscribe
     $<TARGET_FILE:test_bouzidi_link>
+)
+
+add_executable(test_inlet_velocity_field test_inlet_velocity_field.cpp)
+
+target_compile_features(test_inlet_velocity_field PRIVATE cxx_std_20)
+
+target_link_libraries(test_inlet_velocity_field
+  PRIVATE
+    octlb_lbm
+    GTest::gtest_main
+)
+
+add_test(NAME test_inlet_velocity_field COMMAND test_inlet_velocity_field)
+
+add_executable(test_inlet_bc_integration
+  test_inlet_bc_integration.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
+
+target_compile_features(test_inlet_bc_integration PRIVATE cxx_std_20)
+
+target_link_libraries(test_inlet_bc_integration
+  PRIVATE
+    octlb_lbm
+    octlb_field_schedule
+    GTest::gtest
+    MPI::MPI_CXX
+)
+
+add_test(NAME test_inlet_bc_integration
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 1
+    --oversubscribe
+    $<TARGET_FILE:test_inlet_bc_integration>
 )
 
 add_executable(test_unit_converter test_unit_converter.cpp)

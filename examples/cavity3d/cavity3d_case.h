@@ -27,6 +27,7 @@
 #include "src/solver/io/vtk_writer/amr_vtk_writer.h"
 #include "src/solver/io/vtk_writer/vtk_cell_field.h"
 #include "src/solver/lbm/block_lattice.h"
+#include "src/solver/lbm/bc_installer.h"
 #include "src/solver/lbm/boundary/interpolated_velocity.h"
 #include "src/solver/lbm/domain_boundary_handler.h"
 #include "src/solver/lbm/level_coupler.h"
@@ -74,7 +75,6 @@ inline int CavityFluidCellsPerAxis(const UnitConverter& converter) {
 inline void InitializeCavityLattice(CavityLattice& lat, int n_lat,
                                     const UnitConverter& converter) {
   (void)converter;
-  boundary::MarkDomainBoundaryCellKinds(lat, n_lat, n_lat, n_lat);
   const double u_zero[3] = {0.0, 0.0, 0.0};
   lat.initialize(1.0, u_zero);
 }
@@ -181,10 +181,17 @@ struct Cavity3dCase {
                 converter.omega()),
         domain_bc(blocks, face_pairs.tree_boundary_faces(),
                   CavityBoundarySpecs(converter), n_lat, n_lat, n_lat,
-                  converter.omega(), /*boundary_lattice_mode=*/true,
-                  padding_mode),
+                  converter.omega(), padding_mode),
         loop(forest, blocks, ghosts, coupler, domain_bc, converter.omega(),
-             use_const_rho_bgk, const_rho_stats_scope) {}
+             use_const_rho_bgk, const_rho_stats_scope) {
+      // Per-cell dispatch: stamp the six domain-face cells per spec
+      // (kInterpolatedVelocity -> kVelocityDirichlet). Replaces the old
+      // geometric MarkDomainBoundaryBcKinds; equivalent for the single-block
+      // cavity.
+      bc::StampTreeBoundaryCells(blocks, face_pairs.tree_boundary_faces(),
+                                 CavityBoundarySpecs(converter), n_lat, n_lat,
+                                 n_lat);
+    }
 
   void advance_steps(int num_steps) {
     for (int step = 0; step < num_steps; ++step) {
@@ -196,7 +203,7 @@ struct Cavity3dCase {
   const CavityLattice& lattice() const { return blocks[0]; }
 
   double lattice_ux_at(int ix, int iy, int iz) const {
-    if (lattice().cell_kind(ix, iy, iz) == CellKind::kBoundary) {
+    if (lattice().bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet) {
       double u_wall[3] = {};
       boundary::detail::PrescribedBoundaryU(ix, iy, iz, n_lat, n_lat, n_lat,
                                             CavityBoundarySpecs(converter),
@@ -217,16 +224,17 @@ struct Cavity3dCase {
     return u[0];
   }
 
-  static const char* CellKindLabel(CellKind kind) {
+  static const char* BcKindLabel(BcKind kind) {
     switch (kind) {
-      case CellKind::kFluid:
+      case BcKind::kBulk:
         return "fluid";
-      case CellKind::kBoundary:
+      case BcKind::kVelocityDirichlet:
         return "boundary";
-      case CellKind::kSolid:
+      case BcKind::kSolid:
         return "solid";
+      default:
+        return "bc";
     }
-    return "unknown";
   }
 
   // Trilinear interpolation aligned with OpenLB AnalyticalFfromSuperF3D:
@@ -455,10 +463,10 @@ inline CavityCenterlinePointComparison AnalyzeCenterlinePoints(
     row.iy_nearest = iy_nearest;
     row.iz = cmp.iz_center;
     row.kind_floor =
-        Cavity3dCase::CellKindLabel(cavity.lattice().cell_kind(
+        Cavity3dCase::BcKindLabel(cavity.lattice().bc_kind(
             row.ix, iy_floor, row.iz));
     row.kind_nearest =
-        Cavity3dCase::CellKindLabel(cavity.lattice().cell_kind(
+        Cavity3dCase::BcKindLabel(cavity.lattice().bc_kind(
             row.ix, iy_nearest, row.iz));
 
     row.trilinear = cavity.sample_ux(x, y, z) / u_lid;
@@ -593,8 +601,8 @@ inline CenterlineColumn AnalyzeCenterlineColumn(const Cavity3dCase& cavity) {
     CenterlineColumnRow row;
     row.iy = iy;
     row.y_over_h = y_over_h;
-    row.kind = Cavity3dCase::CellKindLabel(
-        cavity.lattice().cell_kind(col.ix, iy, col.iz));
+    row.kind = Cavity3dCase::BcKindLabel(
+        cavity.lattice().bc_kind(col.ix, iy, col.iz));
 
     double u[3] = {};
     row.rho = 0.0;
@@ -606,12 +614,12 @@ inline CenterlineColumn AnalyzeCenterlineColumn(const Cavity3dCase& cavity) {
 
     sum_rho_all += row.rho;
     ++count_all;
-    if (cavity.lattice().cell_kind(col.ix, iy, col.iz) == CellKind::kFluid) {
+    if (cavity.lattice().bc_kind(col.ix, iy, col.iz) == BcKind::kBulk) {
       sum_rho_fluid += row.rho;
       ++count_fluid;
     }
 
-    if (cavity.lattice().cell_kind(col.ix, iy, col.iz) == CellKind::kFluid) {
+    if (cavity.lattice().bc_kind(col.ix, iy, col.iz) == BcKind::kBulk) {
       sim.push_back(row.ux_over_lid);
       ref.push_back(row.openlb_interp);
     }
