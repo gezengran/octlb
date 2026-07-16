@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "src/common/types.h"
-#include "src/solver/lbm/cell_kind.h"
+#include "src/solver/lbm/bc_kind.h"
 
 namespace octlb {
 
@@ -207,8 +207,8 @@ class BlockLattice {
   void set_octant_id(OctantId id) { octant_id_ = id; }
   OctantId octant_id() const { return octant_id_; }
 
-  void set_cell_kind(int ix, int iy, int iz, CellKind kind);
-  CellKind cell_kind(int ix, int iy, int iz) const;
+  void set_bc_kind(int ix, int iy, int iz, BcKind kind);
+  BcKind bc_kind(int ix, int iy, int iz) const;
 
   // Halo coordinates: hx in [0, nx+2*h_), hy, hz likewise.
   T* populations_at_halo(int hx, int hy, int hz);
@@ -283,7 +283,7 @@ class BlockLattice {
   int nx_, ny_, nz_, h_;
   std::vector<T> populations_;
   std::vector<T> stream_tmp_;
-  std::vector<CellKind> cell_kinds_;
+  std::vector<BcKind> bc_kinds_;
   const BouzidiLinkData* bouzidi_ = nullptr;
   OctantId octant_id_ = 0;
   OverlapPaddingCollideMode overlap_padding_collide_mode_ =

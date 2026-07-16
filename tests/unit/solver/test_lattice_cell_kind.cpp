@@ -4,7 +4,7 @@
 #include <vector>
 
 #include "block_lattice.h"
-#include "src/solver/lbm/cell_kind.h"
+#include "src/solver/lbm/bc_kind.h"
 
 namespace octlb {
 namespace {
@@ -52,8 +52,8 @@ TEST(LatticeCellKind, SolidCell_SkipsCollide) {
   BlockLattice<T, Descriptor> lat(4, 4, 4);
   const std::array<T, 3> u0{T{0}, T{0}, T{0}};
   lat.initialize(T{1}, u0.data());
-  lat.set_cell_kind(1, 1, 1, CellKind::kSolid);
-  lat.set_cell_kind(2, 2, 2, CellKind::kSolid);
+  lat.set_bc_kind(1, 1, 1, BcKind::kSolid);
+  lat.set_bc_kind(2, 2, 2, BcKind::kSolid);
 
   const auto before = SnapshotPopulations(lat);
   lat.collide(T{1.0});

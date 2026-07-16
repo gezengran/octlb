@@ -5,7 +5,7 @@
 
 #include "src/solver/lbm/block_lattice.h"
 #include "src/solver/lbm/boundary/interpolated_velocity.h"
-#include "src/solver/lbm/cell_kind.h"
+#include "src/solver/lbm/bc_kind.h"
 #include "src/solver/lbm/domain_boundary_handler.h"
 
 namespace octlb {
@@ -41,7 +41,7 @@ Lattice MakeInitializedBoundaryLattice(int n, int halo = 1) {
   Lattice lat(n, n, n, halo);
   const std::array<T, 3> u0{T{0}, T{0}, T{0}};
   lat.initialize(T{1}, u0.data());
-  boundary::MarkDomainBoundaryCellKinds(lat, n, n, n);
+  boundary::MarkDomainBoundaryBcKinds(lat, n, n, n);
   return lat;
 }
 
@@ -63,7 +63,7 @@ TEST(InterpolatedVelocityComputeRho, CornerEdge_Equilibrium_ReturnsOneNotRawSum)
     const int ix = xyz[0];
     const int iy = xyz[1];
     const int iz = xyz[2];
-    ASSERT_EQ(lat.cell_kind(ix, iy, iz), CellKind::kBoundary);
+    ASSERT_EQ(lat.bc_kind(ix, iy, iz), BcKind::kVelocityDirichlet);
     EXPECT_GE(boundary::detail::BoundaryFaceCount(ix, iy, iz, kN, kN, kN), 2)
         << "cell (" << ix << ',' << iy << ',' << iz << ")";
 

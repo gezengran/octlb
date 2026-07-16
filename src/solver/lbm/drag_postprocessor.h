@@ -4,7 +4,7 @@
 #include <array>
 
 #include "src/solver/lbm/block_lattice.h"
-#include "src/solver/lbm/cell_kind.h"
+#include "src/solver/lbm/bc_kind.h"
 
 namespace octlb {
 
@@ -39,7 +39,7 @@ class MomentumExchangeDrag {
     for (int iz = 0; iz < nz; ++iz) {
       for (int iy = 0; iy < ny; ++iy) {
         for (int ix = 0; ix < nx; ++ix) {
-          if (lat_.cell_kind(ix, iy, iz) != CellKind::kFluid) {
+          if (lat_.bc_kind(ix, iy, iz) != BcKind::kBulk) {
             continue;
           }
           const double* cell = lat_.populations_at_halo(ix + 1, iy + 1, iz + 1);
@@ -54,8 +54,8 @@ class MomentumExchangeDrag {
                 nzn >= nz) {
               continue;  // halo neighbour, not a local obstacle link
             }
-            const CellKind nk = lat_.cell_kind(nxn, nyn, nzn);
-            if (nk != CellKind::kSolid && nk != CellKind::kBoundary) {
+            const BcKind nk = lat_.bc_kind(nxn, nyn, nzn);
+            if (nk != BcKind::kSolid && nk != BcKind::kBouzidi) {
               continue;
             }
             const double fi = cell[iPop];

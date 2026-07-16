@@ -11,7 +11,7 @@
 #include "descriptor/descriptor.h"
 #include "dynamics/lbm.h"
 #include "src/solver/lbm/block_lattice.h"
-#include "src/solver/lbm/cell_kind.h"
+#include "src/solver/lbm/bc_kind.h"
 #include "src/solver/lbm/domain_boundary_handler.h"
 
 namespace octlb {
@@ -242,7 +242,7 @@ class BoundaryLatticeView {
   }
 
   void ComputeInteriorU(int ix, int iy, int iz, T u[DESCRIPTOR::d]) const {
-    if (lat_.cell_kind(ix, iy, iz) == CellKind::kBoundary) {
+    if (lat_.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet) {
       PrescribedU(ix, iy, iz, u);
       return;
     }
@@ -268,7 +268,7 @@ class BoundaryLatticeView {
       rho = T{1};
       return;
     }
-    if (lat_.cell_kind(ix, iy, iz) == CellKind::kBoundary) {
+    if (lat_.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet) {
       PrescribedU(ix, iy, iz, u);
       rho = ComputeRho(ix, iy, iz);
       return;
@@ -290,7 +290,7 @@ class BoundaryLatticeView {
     // reconstructing from populations. This matches OpenLB, where the boundary
     // dynamics stores the wall velocity in an external VELOCITY field and uses
     // it for computeU().
-    if (lat_.cell_kind(ix, iy, iz) == CellKind::kBoundary) {
+    if (lat_.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet) {
       PrescribedU(ix, iy, iz, u);
       return;
     }
@@ -309,7 +309,7 @@ class BoundaryLatticeView {
       return ComputeRho(mx, my, mz);
     }
     const T* f = detail::PopulationsAt(lat_, ix, iy, iz);
-    if (lat_.cell_kind(ix, iy, iz) == CellKind::kBoundary) {
+    if (lat_.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet) {
       int direction = 0;
       int orientation = 0;
       if (FlatBoundaryFaceInfo(ix, iy, iz, nx_, ny_, nz_, direction,
@@ -679,16 +679,20 @@ inline int FaceDirection(FaceDir face) {
 
 }  // namespace detail
 
-inline void MarkDomainBoundaryCellKinds(
+inline void MarkDomainBoundaryBcKinds(
     BlockLattice<double, olb::descriptors::D3Q19<>>& lat, int nx, int ny,
     int nz) {
+  // Transitional geometric marker (R0): stamps the closed-cavity outer shell
+  // as kVelocityDirichlet and the interior as kBulk. Replaced by
+  // bc::StampTreeBoundaryCells (face + spec) in R4 once cavity3d migrates to
+  // per-cell dispatch.
   for (int ix = 0; ix < nx; ++ix) {
     for (int iy = 0; iy < ny; ++iy) {
       for (int iz = 0; iz < nz; ++iz) {
         if (detail::IsBoundaryLatticeCell(ix, iy, iz, nx, ny, nz)) {
-          lat.set_cell_kind(ix, iy, iz, CellKind::kBoundary);
+          lat.set_bc_kind(ix, iy, iz, BcKind::kVelocityDirichlet);
         } else {
-          lat.set_cell_kind(ix, iy, iz, CellKind::kFluid);
+          lat.set_bc_kind(ix, iy, iz, BcKind::kBulk);
         }
       }
     }
@@ -746,7 +750,7 @@ inline void CollideDirichletBoundaryCellAt(Lattice& lat, int ix, int iy, int iz,
                                            int nx, int ny, int nz, T omega,
                                            const std::vector<DomainBcSpec>& specs,
                                            CollideRhoStats* rho_stats = nullptr) {
-  if (lat.cell_kind(ix, iy, iz) != CellKind::kBoundary) {
+  if (lat.bc_kind(ix, iy, iz) != BcKind::kVelocityDirichlet) {
     return;
   }
   double u_wall_d[3]{};
@@ -798,7 +802,7 @@ inline void FillInterpolatedVelocityOverlapPadding(Lattice& lat, int nx, int ny,
         if (ix < 0 || ix >= nx || iy < 0 || iy >= ny || iz < 0 || iz >= nz) {
           return false;
         }
-        return lat.cell_kind(ix, iy, iz) == CellKind::kBoundary;
+        return lat.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet;
       },
       [&](int ix, int iy, int iz) {
         return PaddingMaterialNonZero(ix, iy, iz, nx, ny, nz);
@@ -818,7 +822,7 @@ inline void FillOverlapPaddingForMode(Lattice& lat, int nx, int ny, int nz,
           if (ix < 0 || ix >= nx || iy < 0 || iy >= ny || iz < 0 || iz >= nz) {
             return false;
           }
-          return lat.cell_kind(ix, iy, iz) == CellKind::kBoundary;
+          return lat.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet;
         },
         [&](int ix, int iy, int iz) {
           return PaddingMaterialNonZero(ix, iy, iz, nx, ny, nz) &&
@@ -842,7 +846,7 @@ inline void ApplyInterpolatedVelocityBoundaryCells(
   for (int ix = 0; ix < nx; ++ix) {
     for (int iy = 0; iy < ny; ++iy) {
       for (int iz = 0; iz < nz; ++iz) {
-        if (lat.cell_kind(ix, iy, iz) != CellKind::kBoundary) {
+        if (lat.bc_kind(ix, iy, iz) != BcKind::kVelocityDirichlet) {
           continue;
         }
 

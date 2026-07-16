@@ -174,7 +174,7 @@ struct Cylinder3dCase {
       for (int iz = 0; iz < n; ++iz) {
         for (int iy = 0; iy < n; ++iy) {
           for (int ix = 0; ix < n; ++ix) {
-            if (lat.cell_kind(ix, iy, iz) != CellKind::kFluid) {
+            if (lat.bc_kind(ix, iy, iz) != BcKind::kBulk) {
               continue;
             }
             double rho = 0.0;
@@ -196,7 +196,7 @@ struct Cylinder3dCase {
       for (int iz = 0; iz < n; ++iz) {
         for (int iy = 0; iy < n; ++iy) {
           for (int ix = 0; ix < n; ++ix) {
-            if (lat.cell_kind(ix, iy, iz) == CellKind::kSolid) {
+            if (lat.bc_kind(ix, iy, iz) == BcKind::kSolid) {
               continue;
             }
             double rho = 0.0;
@@ -227,7 +227,7 @@ struct Cylinder3dCase {
   struct SampleDiag {
     double rho = 0.0;
     double ux = 0.0;
-    CellKind kind = CellKind::kSolid;
+    BcKind kind = BcKind::kSolid;
     int edge_count = -1;  // # of local coords on a block boundary (0=interior,
                           // 1=face, 2=edge, 3=corner); -1 = not found locally
   };
@@ -260,9 +260,9 @@ struct Cylinder3dCase {
       lat.get(ix, iy, iz).computeRhoU(rho, u);
       const int ec = (ix == 0 || ix == n - 1) + (iy == 0 || iy == n - 1) +
                      (iz == 0 || iz == n - 1);
-      return {rho, u[0], lat.cell_kind(ix, iy, iz), ec};
+      return {rho, u[0], lat.bc_kind(ix, iy, iz), ec};
     }
-    return {0.0, 0.0, CellKind::kSolid, -1};
+    return {0.0, 0.0, BcKind::kSolid, -1};
   }
 };
 

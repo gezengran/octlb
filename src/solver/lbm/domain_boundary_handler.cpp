@@ -200,8 +200,8 @@ void ConcreteDomainBoundaryHandler::collide_interleaved_with(
   for (int ix = 0; ix < nx_; ++ix) {
     for (int iy = 0; iy < ny_; ++iy) {
       for (int iz = 0; iz < nz_; ++iz) {
-        const CellKind kind = lat.cell_kind(ix, iy, iz);
-        if (kind == CellKind::kFluid) {
+        const BcKind kind = lat.bc_kind(ix, iy, iz);
+        if (kind == BcKind::kBulk) {
           if (use_const_rho_bgk) {
             lat.collide_const_rho_at(ix, iy, iz, omega, avg, rho_stats);
           } else {
@@ -211,7 +211,7 @@ void ConcreteDomainBoundaryHandler::collide_interleaved_with(
             cell.computeRhoU(rho, u);
             olb::lbm<Descriptor>::bgkCollision(cell, rho, u, omega);
           }
-        } else if (kind == CellKind::kBoundary) {
+        } else if (kind == BcKind::kVelocityDirichlet) {
           boundary::CollideDirichletBoundaryCellAt<double, Descriptor>(
               lat, ix, iy, iz, nx_, ny_, nz_, omega, specs_, rho_stats);
         }
