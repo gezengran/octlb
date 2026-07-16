@@ -4,7 +4,7 @@
 > 阻塞于：T09-W1/W2（现有 BC 模型：`CellKind` + `DomainBcSpec` + `DomainBoundaryHandler`）、T11-W2-sanity（legacy BC 已在 uniform sanity 验证）
 > 阻塞：T11-W3 组件 2（压力出口 p=0，作为首个新客户）、T11-W3/W4、后续新算例（sphere3d 等）
 > 对应 PRD：`doc/prd/octlb-framework.md`（BlockStore / DomainBoundaryHandler / BouzidiLinkData / OpenLB 融入策略节，本次同步更新）
-> 状态：**待开始（2026-07-15 立项）**——决策已对齐（见下「关键设计决策」），尚未写代码。
+> 状态：**已完成（2026-07-16，R0–R4 TDD 落地）**——决策已对齐（见下「关键设计决策」），R0–R4 已按 TDD 纵向切片实现并通过验收。
 
 ---
 
@@ -121,12 +121,12 @@ FD pi 计算两支共用（邻域 u 梯度）；仅 `WriteFromPi` 的 `rho`/`u` 
 
 ### 验收标准
 
-- [ ] R0–R4 每波新增单测红→绿
-- [ ] **每波结束 T01–T10 既有 ctest 全绿**（#12 `test_cavity3d_serial` L2<2% 不退化为硬门）
-- [ ] `boundary_lattice_mode_` 与 `UsesInterpolatedVelocity()` 全局门控移除；legacy `ApplyLegacyFaceBc` 移除
-- [ ] 压力出口 `kPressureDirichlet` 作为首个新客户落位（T11 W3 组件 2 交付）
-- [ ] 硬不变量不破：`MaterialKind` 几何 only；`field/` 无 LBM；`io/` 无 LBM；`lbm/` 唯一 `.cpp`=`block_lattice.cpp`（`BcDispatcher`/`BcInstaller` header-only）；Solver 不调 p4est
-- [ ] PRD BlockStore / DomainBoundaryHandler / Bouzidi / OpenLB 融入策略节已同步
+- [x] R0–R4 每波新增单测红→绿
+- [x] **每波结束 T01–T10 既有 ctest 全绿**（#12 `test_cavity3d_serial` L2<2% 不退化为硬门；R3/R4 复跑全量 ctest + L2 通过）
+- [x] `boundary_lattice_mode_` 与 `UsesInterpolatedVelocity()` 全局门控移除；legacy `ApplyLegacyFaceBc` 移除
+- [x] 压力出口 `kPressureDirichlet` 作为首个新客户落位（T11 W3 组件 2 交付）
+- [x] 硬不变量不破：`MaterialKind` 几何 only；`field/` 无 LBM；`io/` 无 LBM；`lbm/` 唯一 `.cpp`=`block_lattice.cpp`（`BcDispatcher`/`BcInstaller` header-only）；Solver 不调 p4est
+- [x] PRD BlockStore / DomainBoundaryHandler / Bouzidi / OpenLB 融入策略节已同步
 
 ---
 
@@ -135,12 +135,12 @@ FD pi 计算两支共用（邻域 u 梯度）；仅 `WriteFromPi` 的 `rho`/`u` 
 ```
 T09-W1/W2（现 BC 模型）— 已完成
 T11-W2-sanity（legacy BC uniform sanity）— 已完成
-└── T11-refactor · BC 调度架构重构 ⬜ 待开始
-    ├── R0 BcKind 引入 ⬜
-    ├── R1 dispatch 中心化 ⬜
-    ├── R2 pressure 分支 ← 交付 T11 W3 组件 2（压力出口）⬜
-    ├── R3 BcInstaller + cylinder3d 重排 ⬜
-    └── R4 迁移 + 移除 legacy ⬜
+└── T11-refactor · BC 调度架构重构 ✅ 完成
+    ├── R0 BcKind 引入 ✅
+    ├── R1 dispatch 中心化 ✅
+    ├── R2 pressure 分支 ← 交付 T11 W3 组件 2（压力出口）✅
+    ├── R3 BcInstaller + cylinder3d 重排 ✅
+    └── R4 迁移 + 移除 legacy ✅
         └── T11-W3 继续（AMR L=4 + Lagrava + 量级；组件 3 STL 可并行）
             └── T11-W4（Cd<1%）
                 └── T12 · amr_convergence（#14）

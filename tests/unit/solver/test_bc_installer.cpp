@@ -110,7 +110,7 @@ TEST(BcInstaller, SchaeferTurek_StampingCorrect) {
   const auto specs = SchaeferTurekSpecs(u_inlet);
   bc::StampFromMaterial(blocks, material);
   bc::StampTreeBoundaryCells(blocks, pairs.tree_boundary_faces(), specs, nx, ny,
-                              nz, /*boundary_lattice_mode=*/true);
+                              nz);
 
   Lattice& lat = blocks[0];
 
@@ -148,6 +148,56 @@ TEST(BcInstaller, SchaeferTurek_StampingCorrect) {
   EXPECT_GT(n_bouzidi, 0) << "obstacle surface must be stamped kBouzidi";
   EXPECT_GT(n_solid, 0) << "obstacle interior must be stamped kSolid";
   EXPECT_GT(n_bulk, 0) << "fluid interior must remain kBulk";
+}
+
+// R4: cavity3d migration. The single-block closed cavity has all six domain
+// faces as tree boundaries; StampTreeBoundaryCells with six kInterpolatedVelocity
+// specs stamps the whole outer shell kVelocityDirichlet and leaves the interior
+// kBulk -- equivalent to the legacy geometric MarkDomainBoundaryBcKinds, so
+// test_cavity3d_serial #12 (L2<2%) does not regress.
+TEST(BcInstaller, Cavity_LegacyEquivalent) {
+  int size = 0;
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  if (size != 1) {
+    GTEST_SKIP() << "single-rank test";
+  }
+
+  OctreeForest forest(MPI_COMM_WORLD, UnitCubeDomain());
+  forest.partition();
+  const FacePairList pairs(forest);
+
+  constexpr int kN = 8;
+  BlockCollection<Lattice> blocks(1, [](OctantId) {
+    return Lattice(kN, kN, kN, 1);
+  });
+
+  std::vector<DomainBcSpec> specs;
+  for (FaceDir face : {FaceDir::kXMin, FaceDir::kXMax, FaceDir::kYMin,
+                       FaceDir::kYMax, FaceDir::kZMin, FaceDir::kZMax}) {
+    DomainBcSpec s;
+    s.face = face;
+    s.type = DomainBcType::kInterpolatedVelocity;
+    specs.push_back(s);
+  }
+  bc::StampTreeBoundaryCells(blocks, pairs.tree_boundary_faces(), specs, kN,
+                              kN, kN);
+
+  Lattice& lat = blocks[0];
+  for (int i = 0; i < kN; ++i) {
+    for (int j = 0; j < kN; ++j) {
+      for (int k = 0; k < kN; ++k) {
+        const bool on_shell = i == 0 || i == kN - 1 || j == 0 ||
+                              j == kN - 1 || k == 0 || k == kN - 1;
+        if (on_shell) {
+          EXPECT_EQ(lat.bc_kind(i, j, k), BcKind::kVelocityDirichlet)
+              << "cavity shell cell (" << i << ',' << j << ',' << k << ')';
+        } else {
+          EXPECT_EQ(lat.bc_kind(i, j, k), BcKind::kBulk)
+              << "cavity interior cell (" << i << ',' << j << ',' << k << ')';
+        }
+      }
+    }
+  }
 }
 
 }  // namespace

@@ -3,6 +3,7 @@
 
 #include <array>
 #include <memory>
+#include <vector>
 
 #include "src/common/bounding_box.h"
 #include "src/mesh/forest/octree_forest.h"
@@ -10,6 +11,7 @@
 #include "src/solver/field/block_collection.h"
 #include "src/solver/field/ghost_schedule.h"
 #include "src/solver/lbm/block_lattice.h"
+#include "src/solver/lbm/bc_installer.h"
 #include "src/solver/lbm/boundary/inlet_velocity_field.h"
 #include "src/solver/lbm/domain_boundary_handler.h"
 #include "src/solver/lbm/level_coupler.h"
@@ -42,11 +44,10 @@ double Parab(int i, int n) {
   return 4.0 * c * (1.0 - c);
 }
 
-// Legacy (non-boundary-lattice) velocity path: the handler fills the inlet
-// ghost so that the ghost cell's velocity matches the prescribed per-cell
-// Poiseuille profile. Verifies inlet_field reaches the BC, not just the lookup
-// helper.
-TEST(InletBcIntegration, LegacyAppliesPoiseuilleToGhost) {
+// Per-cell dispatch (R4): the inlet is a velocity-Dirichlet FD cell whose
+// prescribed u comes from the inlet_field (Poiseuille profile). After collide +
+// PostStream FD, the inlet boundary cell's velocity matches the profile.
+TEST(InletBcIntegration, FdAppliesPoiseuilleToInletCell) {
   int size = 0;
   MPI_Comm_size(MPI_COMM_WORLD, &size);
   if (size != 1) {
@@ -58,7 +59,6 @@ TEST(InletBcIntegration, LegacyAppliesPoiseuilleToGhost) {
   const FacePairList pairs(forest);
   auto blocks = MakeSingleBlockLattice();
   Lattice& lat = blocks[0];
-  lat.collide(1.0);
 
   DomainBcSpec spec;
   spec.face = FaceDir::kXMin;
@@ -66,23 +66,27 @@ TEST(InletBcIntegration, LegacyAppliesPoiseuilleToGhost) {
   spec.inlet_field = std::make_shared<PoiseuilleInletProfile>(
       FaceDir::kXMin, kN, kN, kPeak, std::array<double, 3>{1.0, 0.0, 0.0},
       /*ramp_end_t=*/0.0);
+  const std::vector<DomainBcSpec> specs = {spec};
+  bc::StampTreeBoundaryCells(blocks, pairs.tree_boundary_faces(), specs, kN,
+                              kN, kN);
 
   ConcreteDomainBoundaryHandler handler(blocks, pairs.tree_boundary_faces(),
-                                       {spec}, kN, kN, kN,
-                                       /*omega=*/1.0, /*boundary_lattice_mode=*/false);
+                                        specs, kN, kN, kN, /*omega=*/1.0);
   handler.set_time(0.0);
-  handler.apply();
+  handler.collide_interleaved_with(lat, nullptr, 1.0, false);
+  handler.apply_post_stream();
 
-  for (int iy = 0; iy < kN; ++iy) {
-    for (int iz = 0; iz < kN; ++iz) {
-      const double* ghost = lat.populations_at_halo(0, iy + 1, iz + 1);
-      CellProxy<double, Descriptor> cell(const_cast<double*>(ghost));
+  // Flat inlet-face cells (interior of the face, not the wall edges/corners)
+  // are kVelocityDirichlet and prescribe the Poiseuille profile. Edge/corner
+  // cells belong to the walls and are not asserted here.
+  for (int iy = 1; iy < kN - 1; ++iy) {
+    for (int iz = 1; iz < kN - 1; ++iz) {
       double rho = 0.0;
       double u[3] = {};
-      cell.computeRhoU(rho, u);
+      lat.get(0, iy, iz).computeRhoU(rho, u);
       const double expected = kPeak * Parab(iy, kN) * Parab(iz, kN);
       EXPECT_NEAR(u[0], expected, 1e-9)
-          << "inlet ghost ux at iy=" << iy << " iz=" << iz;
+          << "inlet cell ux at iy=" << iy << " iz=" << iz;
       EXPECT_NEAR(u[1], 0.0, 1e-9);
       EXPECT_NEAR(u[2], 0.0, 1e-9);
     }

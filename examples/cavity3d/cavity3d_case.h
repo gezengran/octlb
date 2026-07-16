@@ -27,6 +27,7 @@
 #include "src/solver/io/vtk_writer/amr_vtk_writer.h"
 #include "src/solver/io/vtk_writer/vtk_cell_field.h"
 #include "src/solver/lbm/block_lattice.h"
+#include "src/solver/lbm/bc_installer.h"
 #include "src/solver/lbm/boundary/interpolated_velocity.h"
 #include "src/solver/lbm/domain_boundary_handler.h"
 #include "src/solver/lbm/level_coupler.h"
@@ -74,7 +75,6 @@ inline int CavityFluidCellsPerAxis(const UnitConverter& converter) {
 inline void InitializeCavityLattice(CavityLattice& lat, int n_lat,
                                     const UnitConverter& converter) {
   (void)converter;
-  boundary::MarkDomainBoundaryBcKinds(lat, n_lat, n_lat, n_lat);
   const double u_zero[3] = {0.0, 0.0, 0.0};
   lat.initialize(1.0, u_zero);
 }
@@ -181,10 +181,17 @@ struct Cavity3dCase {
                 converter.omega()),
         domain_bc(blocks, face_pairs.tree_boundary_faces(),
                   CavityBoundarySpecs(converter), n_lat, n_lat, n_lat,
-                  converter.omega(), /*boundary_lattice_mode=*/true,
-                  padding_mode),
+                  converter.omega(), padding_mode),
         loop(forest, blocks, ghosts, coupler, domain_bc, converter.omega(),
-             use_const_rho_bgk, const_rho_stats_scope) {}
+             use_const_rho_bgk, const_rho_stats_scope) {
+      // Per-cell dispatch: stamp the six domain-face cells per spec
+      // (kInterpolatedVelocity -> kVelocityDirichlet). Replaces the old
+      // geometric MarkDomainBoundaryBcKinds; equivalent for the single-block
+      // cavity.
+      bc::StampTreeBoundaryCells(blocks, face_pairs.tree_boundary_faces(),
+                                 CavityBoundarySpecs(converter), n_lat, n_lat,
+                                 n_lat);
+    }
 
   void advance_steps(int num_steps) {
     for (int step = 0; step < num_steps; ++step) {

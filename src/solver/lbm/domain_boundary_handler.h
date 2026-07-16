@@ -94,9 +94,11 @@ class ConcreteDomainBoundaryHandler : public DomainBoundaryHandler {
       BlockCollection<DomainBoundaryLattice>& blocks,
       const std::vector<TreeBoundaryFace>& faces,
       const std::vector<DomainBcSpec>& specs, int nx, int ny, int nz,
-      double omega = 1.0, bool boundary_lattice_mode = false,
+      double omega = 1.0,
       OverlapPaddingMode padding_mode = OverlapPaddingMode::kHybrid);
 
+  // Per-cell dispatch is now the only path; apply() is retained for the flat
+  // advance path and collides non-bulk boundary cells per their BcKind.
   void apply(CollideRhoStats* rho_stats = nullptr, double average_rho = 1.0,
              bool use_const_rho_bgk = false) override;
   void apply_post_stream() override;
@@ -107,15 +109,6 @@ class ConcreteDomainBoundaryHandler : public DomainBoundaryHandler {
       bool use_const_rho_bgk) override;
 
  private:
-  void ApplyLegacyFaceBc(DomainBoundaryLattice& lat, FaceDir dir,
-                         const DomainBcSpec& spec);
-  // Per-cell velocity ghost fill: PrescribedVelocity(spec, ix,iy,iz,t) -> Zou-He.
-  void ApplyVelocityGhost(const DomainBcSpec& spec, int ix, int iy, int iz,
-                          double* ghost, const double* interior, int face);
-  // Any face uses a per-cell FD boundary (InterpolatedVelocity inlet/lid or
-  // InterpolatedPressure outlet) -> per-cell dispatch path is active.
-  bool UsesFdBoundary() const;
-
   BlockCollection<DomainBoundaryLattice>& blocks_;
   std::vector<TreeBoundaryFace> faces_;
   std::vector<DomainBcSpec> specs_;
@@ -123,7 +116,6 @@ class ConcreteDomainBoundaryHandler : public DomainBoundaryHandler {
   int ny_;
   int nz_;
   double omega_;
-  bool boundary_lattice_mode_;
   OverlapPaddingMode padding_mode_;
 };
 

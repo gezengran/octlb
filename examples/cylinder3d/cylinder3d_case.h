@@ -142,16 +142,14 @@ struct Cylinder3dCase {
         ghosts(comm, face_pairs, blocks, n, n, n),
         coupler(comm, face_pairs, forest, blocks, n, n, n, omega),
         domain_bc(blocks, face_pairs.tree_boundary_faces(),
-                  CylinderBcSpecs(u_inlet), n, n, n, omega,
-                  /*boundary_lattice_mode=*/true),
+                  CylinderBcSpecs(u_inlet), n, n, n, omega),
         loop(forest, blocks, ghosts, coupler, domain_bc, omega,
              /*use_const_rho_bgk=*/false) {
       // Per-cell dispatch: stamp the domain-outer face cells (inlet/outlet/
       // walls) per spec. The cylinder surface keeps kBouzidi from
       // initialize_from_material; the fluid interior keeps kBulk.
       bc::StampTreeBoundaryCells(blocks, face_pairs.tree_boundary_faces(),
-                                 CylinderBcSpecs(u_inlet), n, n, n,
-                                 /*boundary_lattice_mode=*/true);
+                                 CylinderBcSpecs(u_inlet), n, n, n);
     }
 
   void advance_steps(int num_steps) {

@@ -131,8 +131,7 @@ TEST(BcDispatcher, MixedKinds_PerCellDispatch) {
   }
 
   ConcreteDomainBoundaryHandler handler(blocks, pairs.tree_boundary_faces(),
-                                        specs, kN, kN, kN, /*omega=*/1.0,
-                                        /*boundary_lattice_mode=*/true);
+                                        specs, kN, kN, kN, /*omega=*/1.0);
   handler.collide_interleaved_with(lat, /*rho_stats=*/nullptr,
                                    /*average_rho=*/1.0,
                                    /*use_const_rho_bgk=*/false);

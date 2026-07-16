@@ -90,19 +90,10 @@ inline void StampFromMaterial(BlockCollection<InstallerLattice>& blocks,
 
 // Stamp the cells sitting on each domain-outer (tree-boundary) face with the
 // BcKind implied by that face's spec. Replaces MarkDomainBoundaryCellKinds.
-//
-// boundary_lattice_mode is a transient migration hint (removed in R4): legacy
-// mode (cylinder3d) leaves tree-boundary cells as kBulk -- walls/inlet/outlet
-// are still enforced by the legacy ghost-fill path. boundary_lattice mode
-// (cavity3d) stamps the face slabs so per-cell dispatch takes over.
 inline void StampTreeBoundaryCells(BlockCollection<InstallerLattice>& blocks,
                                    const std::vector<TreeBoundaryFace>& faces,
                                    const std::vector<DomainBcSpec>& specs,
-                                   int nx, int ny, int nz,
-                                   bool boundary_lattice_mode) {
-  if (!boundary_lattice_mode) {
-    return;
-  }
+                                   int nx, int ny, int nz) {
   for (const TreeBoundaryFace& face : faces) {
     InstallerLattice& lat = blocks[face.octant_id];
     const BcKind kind = BcKindFromSpecType(

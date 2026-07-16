@@ -3,7 +3,7 @@
 > 版本：v0.3  
 > 日期：2026-05-28（进度更新：2026-06-24；T10 完成，见 `doc/tasks/T10-cavity3d.md`）  
 > 推敲更新：2026-07-10——审计已实现栈发现缺陷 ①②③④⑤ + 根因，确立 T11 cylinder3d 治理路径（P0 + W1–W4，oracle 三阶 sanity→量级→Cd<1%），见 `doc/tasks/T11-cylinder3d.md` 与下文「已知缺陷与治理路径」节  
-> 架构更新：2026-07-15——T11 W3 推进时发现 BC 调度架构缺陷 ⑥（per-face `DomainBcSpec` + 整 handler `boundary_lattice_mode_` 无法表达同 block 内混合 BC，每接入新算例需在唯一 FD 路径加分支）。决策：移植 OpenLB「per-cell Dynamics 多态 + material 号映射」**架构思想**为 OctLB「per-cell `BcKind` 枚举 + 中心化 dispatch」（**不引框架层**、无虚函数；枚举 switch 失效再切 OpenLB 验证过的多态兜底）。`MaterialKind` 保持几何 only，BC 角色求解器侧解析。先重构，压力出口（T11 W3 组件 2）作首个新客户。详见 `doc/tasks/T11-refactor-bc-dispatch.md` 与下文 BlockStore/DomainBoundaryHandler/缺陷 ⑥
+> 架构更新：2026-07-15 立项 / 2026-07-16 落地（T11-refactor R0–R4）——T11 W3 推进时发现 BC 调度架构缺陷 ⑥（per-face `DomainBcSpec` + 整 handler `boundary_lattice_mode_` 无法表达同 block 内混合 BC，每接入新算例需在唯一 FD 路径加分支）。决策：移植 OpenLB「per-cell Dynamics 多态 + material 号映射」**架构思想**为 OctLB「per-cell `BcKind` 枚举 + 中心化 dispatch」（**不引框架层**、无虚函数；枚举 switch 失效再切 OpenLB 验证过的多态兜底）。`MaterialKind` 保持几何 only，BC 角色由求解器侧 `BcInstaller` 在 setup 时解析 `(MaterialField + TreeBoundaryFace + BouzidiLinkData) → per-cell BcKind`。重构已落地：`CellKind` 被 `BcKind` 取代，`boundary_lattice_mode_`/`UsesInterpolatedVelocity()`/legacy `ApplyLegacyFaceBc` 移除，压力出口 `kPressureDirichlet` 作为首个新客户就位；cavity3d #12 L2<2% 与 cylinder3d sanity 不退化。详见 `doc/tasks/T11-refactor-bc-dispatch.md` 与下文 BlockStore/DomainBoundaryHandler/缺陷 ⑥
 
 ---
 
@@ -92,10 +92,12 @@ OctLB/
 │       └── lbm/          ← LBM 专属；算法复用策略（见"OpenLB 代码融入策略"）
 │           │             # ── OctLB 自建区（namespace octlb）──
 │           ├── block_lattice.h/.cpp  # octlb::BlockLattice<T,D>，octant 感知格子数据结构
-│           ├── cell_kind.h           # CellKind（T09-W1）
-│           ├── domain_boundary_handler.*  # 域外 tree BC（T09-W1）
+│           ├── bc_kind.h            # per-cell BcKind 枚举（T11-refactor，取代 CellKind）
+│           ├── bc_dispatcher.h      # 中心化 per-cell BC dispatch（header-only）
+│           ├── bc_installer.h       # setup 时 stamp per-cell BcKind（header-only）
+│           ├── domain_boundary_handler.*  # 域外 tree BC（T09-W1；T11-refactor per-cell dispatch）
 │           ├── bouzidi_link_data.*   # Bouzidi q_frac 缓存（T09-W2）
-│           ├── lattice_material_init.*  # MaterialField → CellKind（T09-W2）
+│           ├── lattice_material_init.*  # MaterialField → BcKind（T11-refactor，经 BcInstaller）
 │           ├── level_coupler.h/.cpp  # Lagrava 粗细耦合（T06；算法复用 dynamics/）
 │           ├── time_loop/            # 递归下降 TimeLoop（T06；T09-W1 注入 DomainBoundaryHandler）
 │           ├── unit_converter/       # LBM 单位换算（T10 cavity3d）
@@ -104,7 +106,7 @@ OctLB/
 │           ├── dynamics/     # BGK/MRT/Smagorinsky kernel、平衡态、矩计算，~12 个头文件
 │           ├── core/         # MinimalCell concept、FieldD、Vector，~5 个头文件
 │           ├── utilities/    # 数学工具（vectorHelpers 等），~5 个头文件
-│           └── boundary/     # bounce-back / Zou-He（T09-W1）；Bouzidi pull（T09-W2）
+│           └── boundary/     # Bouzidi pull（T09-W2）；InterpolatedVelocity FD（T11-refactor 速度/压力两支）
 │
 ├── examples/
 │   ├── cavity3d/         # 初期验证：无 STL，无 AMR，Lid-driven cavity
@@ -245,31 +247,32 @@ struct BoundingBox {
 - 每个 octant 持有一个 `octlb::BlockLattice<T, D3Q19Descriptor>`——OctLB 自建的格子数据结构。
 - 内存布局：`[Nx+2h][Ny+2h][Nz+2h][Q]` 平坦数组，`h=1` ghost halo，Q 在最内层。
 - 块尺寸：`(N+2)³×Q`，halo 宽度 = 1（D3Q19 streaming 只需 1 格 overlap）。
-- 每 interior 格持有 **`CellKind`**（T09-W1）：`kFluid` / `kSolid` / `kBoundary`；默认 `kFluid`。`collide()` / `stream()` **跳过** `kSolid` 与 `kBoundary`。
-  - **`BcKind` 超集重构（2026-07-15 立项，T11-refactor）**：`CellKind` 将被 `BcKind`（`kBulk`/`kBounceBack`/`kMovingBounceBack`/`kBouzidi`/`kVelocityDirichlet`/`kPressureDirichlet`/`kOutflow`/`kSolid`）取代——per-cell 标记 BC 类型，中心化 `BcDispatcher` 按 `BcKind` switch 分发 collide/computeRhoU/post_stream，**移除整 handler `boundary_lattice_mode_` 全局门控**，使同 block 内混合 BC（入口速度 + 出口压力 + 圆柱 Bouzidi + 壁 bounce-back）自由共存。`MaterialKind` 保持几何 only，BC 角色由求解器侧 `BcInstaller` 在 setup 时按 `(MaterialField + TreeBoundaryFace 面角色 + BouzidiLinkData)` stamp 为 per-cell `BcKind`。`BcDispatcher`/`BcInstaller` header-only（`lbm/` 唯一 `.cpp` 仍 `block_lattice.cpp`）。详见 `doc/tasks/T11-refactor-bc-dispatch.md`。
-- `BlockLattice::collide(omega)` 在 `kFluid` 格上调用 `olb::collision::BGK::type::apply(cell, params)`——OpenLB 的纯函数模板，只依赖 `concepts::MinimalCell`。
+- 每 interior 格持有 **`BcKind`**（T11-refactor，取代 T09-W1 的 `CellKind`）：`kBulk` / `kSolid` / `kBounceBack` / `kMovingBounceBack` / `kBouzidi` / `kVelocityDirichlet` / `kPressureDirichlet` / `kOutflow`；默认 `kBulk`。per-cell 标记 BC 类型——消解了旧 `CellKind::kBoundary` 的过载（cavity3d 树面 Dirichlet vs cylinder3d 圆柱 Bouzidi），使同 block 内混合 BC（入口速度 + 出口压力 + 圆柱 Bouzidi + 壁 no-slip）自由共存。
+  - `BcDispatcher`（header-only）按 `lat.bc_kind(ix,iy,iz)` switch 分发 `collide` / `compute_rho_u` / `post_stream`，各 arm 委托既有无状态 kernel，无虚函数、无全局 mode 标志。`collide()` 仅 `kBulk` 碰撞（BGK / ConstRhoBGK），其余按 kind 跳过或反射；`stream()` 对反射类 `{kVelocityDirichlet, kPressureDirichlet, kBouzidi}` 做 half-way 反弹拉、对 `kBouzidi` 源触发 Bouzidi 插值。
+  - `MaterialKind` 保持几何 only（mesh 不含物理，硬不变量不破）；BC 角色由求解器侧 `BcInstaller`（header-only）在 setup 时按 `(MaterialField 几何 + TreeBoundaryFace 面角色 + BouzidiLinkData)` stamp 为 per-cell `BcKind`：`kFluid→kBulk`、`kSolid→kSolid`、`kBoundary→kBouzidi`、域外面按 `DomainBcSpec.type` 映射（`kNoSlip→kBounceBack`、`kMovingLid→kMovingBounceBack`、`kInterpolatedVelocity→kVelocityDirichlet`、`kInterpolatedPressure→kPressureDirichlet`、`kOutflow→kOutflow`）。`BcDispatcher`/`BcInstaller` header-only（`lbm/` 唯一 `.cpp` 仍 `block_lattice.cpp`）。详见 `doc/tasks/T11-refactor-bc-dispatch.md`。
+- `BlockLattice::collide(omega)` 在 `kBulk` 格上调用 `olb::collision::BGK::type::apply(cell, params)`——OpenLB 的纯函数模板，只依赖 `concepts::MinimalCell`。
 - `BlockLattice::pack_face` / `unpack_face`（T05）：满足 `FacePackable`，供 `GhostSchedule` 与测试使用。
-- `BlockLattice::stream()` 使用 pull-scheme，读取已由 `GhostSchedule` 刷新的 ghost 层及域边界 BC 写入的 tree ghost（见下）。**T09-W2**：pull 时若源邻居为 `kSolid` / `kBoundary`，用初始化缓存的 `q_frac` 在 `stream()` 内做 Bouzidi（**不**从 solid 格读 population）。
-- **T09-W2**：`initialize_from_material(MaterialField)` 写入 `CellKind` 并为 fluid 格设统一 `omega`；**T09-W1 不**读取 `MaterialField`。
+- `BlockLattice::stream()` 使用 pull-scheme，读取已由 `GhostSchedule` 刷新的 ghost 层及域边界 BC 写入的 tree ghost（见下）。**T11-refactor**：pull 时若源邻居为 `kSolid` / `kBouzidi`，用初始化缓存的 `q_frac` 在 `stream()` 内做 Bouzidi（**不**从 solid 格读 population），由 `BcKind==kBouzidi` 触发。
+- **T11-refactor**：`initialize_from_material(MaterialField)` 经 `BcInstaller::StampFromMaterial` 写入 `BcKind`（`kFluid→kBulk`、`kSolid→kSolid`、`kBoundary→kBouzidi`）并为 fluid 格设统一 `omega`；example 侧再用 `BcInstaller::StampTreeBoundaryCells` stamp 域外面。
 - `BlockCollection<BlockLattice>` 从 T03 泛型工厂直接复用，无需修改。
 - **Overlap-padding（2026-07-15，T11 ④ HITL 决策落定）**：`BlockLattice` 在 core + `h=1` halo 之外，另带一层对齐 OpenLB `SuperLattice` padded-block 语义的 **overlap padding**（core + 2×OVERLAP，OVERLAP 默认 3）。相关机制：`collide_overlap_padding_bgk` / `stream_overlap_padding_shell` / `commit_overlap_padding_stream` / `OverlapPaddingCollideMode`（`kBgkOnMaterialNonZero` / `kNoDynamics`）/ `YminYmaxPaddingOutOfHaloMode`（`kOpenLbRotateWrap` / `kZero` / `kKeepSelf`）/ `fill_overlap_padding_from_core` / `fill_overlap_padding_bc_post_stream`（`solver/lbm/block_lattice.h`）。**保留原因**：cavity3d（T10）的 Cd ~2% 对齐 OpenLB 校准依赖此 padded 语义（stream 按列 rotate、PostStream `addPoints2CommBC` 与 padding 通信）；早期「halo `h=1`、无 padding」的最简假设不足以复现 OpenLB 结果。**设计原则不变**：padding 仍是 `octlb::BlockLattice` **自建存储**内部实现，**不**引入 OpenLB 框架层（`ConcreteBlockLattice`/`SuperLattice`/`DynamicsPromise`），不破坏 Mesh↔Solver seam、`field/` 可抽取性、`io/` 无 LBM 等硬不变量。即「最小自建」立论修正为「**自建存储 + 不引框架层**」，padding 属存储内部细节，见「OpenLB 代码融入策略」修订说明。
 
-**DomainBoundaryHandler（T09-W1）**
+**DomainBoundaryHandler（T09-W1；T11-refactor per-cell dispatch）**
 
-- 构造时绑定 `FacePairList::TreeBoundaryFaces` + example 侧 BC 配置（如 `FaceDir → no-slip bounce-back` / `moving_lid` Zou-He）。
-- `apply()` 在 post-collision populations 上写入 **tree 外侧 ghost 层**；**不**处理 STL 曲面（W2 Bouzidi）或同级 halo（T05）。
-- **注入 `TimeLoop`**（外部引用、不持有）：`collide → domain_bc.apply()（pre-stream）→ GhostSchedule::exchange() → stream() → domain_bc.apply_post_stream()`；单元测试可用 `NoOpDomainBoundaryHandler`。`apply_post_stream()` 为 OpenLB PostStream 对齐段，承载 InterpolatedVelocity/PlaneFd 等**需 stream 后邻居**重建的 BC（见 TimeLoop 阶段顺序修订说明）。
-- **per-cell dispatch 重构（2026-07-15 立项，T11-refactor）**：`apply()`/`apply_post_stream()` 将改为遍历边界格按 per-cell `BcKind` 中心化分发（`BcDispatcher::collide` / `post_stream`），**移除**整 handler `boundary_lattice_mode_` 与 `UsesInterpolatedVelocity()` 全局门控及 legacy `ApplyLegacyFaceBc` per-face ghost-fill 路径。prescribed 值仍由面 → `DomainBcSpec` 查表（`u_wall`/`inlet_field`/`rho_target`），与 `BcKind` dispatch 正交。详见 `doc/tasks/T11-refactor-bc-dispatch.md`。
+- 构造时绑定 `FacePairList::TreeBoundaryFaces` + example 侧 BC 配置（`DomainBcSpec`：`face` / `type` / `u_wall` / `inlet_field` / `rho_target`）。
+- **T11-refactor**：唯一路径是 per-cell dispatch——`collide_interleaved_with()` 遍历所有格按 `BcDispatcher::collide` 分发（OpenLB Dominant 空间序），`apply_post_stream()` 遍历 FD 边界格（`kVelocityDirichlet` / `kPressureDirichlet`）做 `ApplyPlaneFdBoundary`（Edge/Corner）；`apply()` 保留给 flat advance 路径（碰撞非 `kBulk` 边界格）。**已移除** `boundary_lattice_mode_` 全局门控、`UsesInterpolatedVelocity()`、legacy `ApplyLegacyFaceBc` per-face ghost-fill 路径。
+- prescribed 值由面 → `DomainBcSpec` 查表（`u_wall`/`inlet_field`/`rho_target`），与 `BcKind` dispatch 正交：dispatch 按 cell 的 `BcKind`，值按 cell 所属面的 spec。`PrescribedBoundaryU` 对带 `inlet_field` 的速度面按场取值（如 cylinder3d 均匀/Poiseuille 入口），否则保留 cavity3d 顶盖语义。
+- **注入 `TimeLoop`**（外部引用、不持有）：`collide_interleaved_with()（pre-stream）→ GhostSchedule::exchange() → stream() → apply_post_stream()`；单元测试可用 `NoOpDomainBoundaryHandler`。`apply_post_stream()` 为 OpenLB PostStream 对齐段，承载 InterpolatedVelocity/PlaneFd 等**需 stream 后邻居**重建的 BC。
 
 **BouzidiLinkData（T09-W2，静态 AMR v1）**
 
 - 初始化一次性构建：对每个 **相邻 solid/boundary 的 `kFluid` 格**、每个 cut link 缓存 `q_frac`（沿 lattice 方向到壁面的分数距离）。输入：`MaterialField` + `GeometryAssembly` + `OctreeForest::quadrant_bounds` + 格心物理坐标；**不**回写 `MaterialField`（T07 不预存距离/法向）。
 - 运行时集成在 `BlockLattice::stream()` pull 阶段；**不**再注入 `TimeLoop`。算法核复用 OpenLB / octree-mesh 无状态 Bouzidi 公式。
-  - **`kBouzidi` arm 归并（2026-07-15 立项，T11-refactor）**：Bouzidi pull 将由 per-cell `BcKind==kBouzidi` 触发（`BcInstaller` stamp），不再作为独立分类路径；`BouzidiLinkData` 数据结构与 pull 公式不变。
+  - **`kBouzidi` arm 归并（T11-refactor 落地）**：Bouzidi pull 由 per-cell `BcKind==kBouzidi` 触发（`BcInstaller` stamp 自 `MaterialKind::kBoundary`），不再作为独立分类路径；`BouzidiLinkData` 数据结构与 pull 公式不变。
 
 **HaloExchange**
 
-- 每层时间步：`collide()` → `DomainBoundaryHandler::apply()`（域外 tree 面 pre-stream 段，T09-W1）→ `GhostSchedule::exchange()`（同级面）→ `stream()`（含 T09-W2 Bouzidi pull）→ `DomainBoundaryHandler::apply_post_stream()`（PostStream 段，InterpolatedVelocity 等）。
+- 每层时间步（T11-refactor）：`collide_interleaved_with()`（per-cell `BcDispatcher::collide`，OpenLB Dominant 空间序，pre-stream 段）→ `GhostSchedule::exchange()`（同级面）→ `stream()`（含 `BcKind==kBouzidi` 触发的 Bouzidi pull）→ `DomainBoundaryHandler::apply_post_stream()`（PostStream 段，`kVelocityDirichlet`/`kPressureDirichlet` 的 PlaneFd 重建）。
 - 面层数据格式：19 个 double/float 的 N×N slab（单层），对应 f 分布函数分量。
 - 粗细界面不在此路径；由 `LevelCoupler` 在子步间对 `CoarseFineFaces` 做 Lagrava 插值/限制。
 
