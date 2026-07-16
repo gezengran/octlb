@@ -18,6 +18,7 @@ enum class DomainBcType {
   kMovingLid,
   kInterpolatedVelocity,
   kOutflow,  // Zero-gradient (do-nothing) outflow BC (W1, T11).
+  kInterpolatedPressure,  // Pressure-outlet FD (prescribed rho) BC (T11 W3).
 };
 
 // InterpolatedVelocity overlap padding fill before PlaneFd (PostStream stage).
@@ -35,6 +36,9 @@ struct DomainBcSpec {
   // faces (kInterpolatedVelocity / kMovingLid) prescribe u per cell from the
   // field instead of the constant u_wall. Empty -> backward compatible.
   std::shared_ptr<boundary::InletVelocityField> inlet_field;
+  // Prescribed outlet density for kInterpolatedPressure faces (p = cs^2 * (
+  // rho - 1 ), so rho_target=1.0 is p=0). Default 1.0.
+  double rho_target = 1.0;
 };
 
 // Per-cell prescribed velocity for a BC spec: the inlet_field's value at

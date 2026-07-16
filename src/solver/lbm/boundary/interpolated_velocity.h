@@ -242,12 +242,65 @@ class BoundaryLatticeView {
   }
 
   void ComputeInteriorU(int ix, int iy, int iz, T u[DESCRIPTOR::d]) const {
-    if (lat_.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet) {
+    const BcKind kind = lat_.bc_kind(ix, iy, iz);
+    if (kind == BcKind::kVelocityDirichlet) {
       PrescribedU(ix, iy, iz, u);
+      return;
+    }
+    if (kind == BcKind::kPressureDirichlet) {
+      ExtrapolatedU(ix, iy, iz, u);
       return;
     }
     T rho = T{0};
     lat_.get(ix, iy, iz).computeRhoU(rho, u);
+  }
+
+  // FD-extrapolated u for a pressure cell: the inward (interior) neighbor's u.
+  // For a uniform interior field this equals the interior u exactly.
+  void ExtrapolatedU(int ix, int iy, int iz, T u[DESCRIPTOR::d]) const {
+    int direction = 0;
+    int orientation = 0;
+    if (!FlatBoundaryFaceInfo(ix, iy, iz, nx_, ny_, nz_, direction,
+                              orientation)) {
+      for (int d = 0; d < DESCRIPTOR::d; ++d) u[d] = T{0};
+      return;
+    }
+    int nix = ix;
+    int niy = iy;
+    int niz = iz;
+    if (direction == 0) {
+      nix = ix - orientation;
+    } else if (direction == 1) {
+      niy = iy - orientation;
+    } else {
+      niz = iz - orientation;
+    }
+    ComputeU(nix, niy, niz, u);
+  }
+
+  // Prescribed outlet density for a pressure cell (p = cs^2 * (rho - 1)).
+  // Reads the face spec's rho_target (default 1.0 -> p=0).
+  T PrescribedRho(int ix, int iy, int iz) const {
+    int direction = 0;
+    int orientation = 0;
+    if (FlatBoundaryFaceInfo(ix, iy, iz, nx_, ny_, nz_, direction,
+                             orientation)) {
+      const FaceDir face = FaceDirFromDirectionOrientation(direction,
+                                                            orientation);
+      return static_cast<T>(FindSpec(specs_, face).rho_target);
+    }
+    return T{1};
+  }
+
+  static FaceDir FaceDirFromDirectionOrientation(int direction,
+                                                 int orientation) {
+    if (direction == 0) {
+      return orientation < 0 ? FaceDir::kXMin : FaceDir::kXMax;
+    }
+    if (direction == 1) {
+      return orientation < 0 ? FaceDir::kYMin : FaceDir::kYMax;
+    }
+    return orientation < 0 ? FaceDir::kZMin : FaceDir::kZMax;
   }
 
   void PrescribedU(int ix, int iy, int iz, T u[DESCRIPTOR::d]) const {
@@ -268,9 +321,15 @@ class BoundaryLatticeView {
       rho = T{1};
       return;
     }
-    if (lat_.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet) {
+    const BcKind kind = lat_.bc_kind(ix, iy, iz);
+    if (kind == BcKind::kVelocityDirichlet) {
       PrescribedU(ix, iy, iz, u);
       rho = ComputeRho(ix, iy, iz);
+      return;
+    }
+    if (kind == BcKind::kPressureDirichlet) {
+      rho = PrescribedRho(ix, iy, iz);
+      ExtrapolatedU(ix, iy, iz, u);
       return;
     }
     lat_.get(ix, iy, iz).computeRhoU(rho, u);
@@ -290,8 +349,13 @@ class BoundaryLatticeView {
     // reconstructing from populations. This matches OpenLB, where the boundary
     // dynamics stores the wall velocity in an external VELOCITY field and uses
     // it for computeU().
-    if (lat_.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet) {
+    const BcKind kind = lat_.bc_kind(ix, iy, iz);
+    if (kind == BcKind::kVelocityDirichlet) {
       PrescribedU(ix, iy, iz, u);
+      return;
+    }
+    if (kind == BcKind::kPressureDirichlet) {
+      ExtrapolatedU(ix, iy, iz, u);
       return;
     }
     T rho = T{0};
@@ -308,8 +372,12 @@ class BoundaryLatticeView {
       const int mz = MirrorExteriorIndex(iz, nz_);
       return ComputeRho(mx, my, mz);
     }
+    const BcKind kind = lat_.bc_kind(ix, iy, iz);
+    if (kind == BcKind::kPressureDirichlet) {
+      return PrescribedRho(ix, iy, iz);
+    }
     const T* f = detail::PopulationsAt(lat_, ix, iy, iz);
-    if (lat_.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet) {
+    if (kind == BcKind::kVelocityDirichlet) {
       int direction = 0;
       int orientation = 0;
       if (FlatBoundaryFaceInfo(ix, iy, iz, nx_, ny_, nz_, direction,
@@ -802,7 +870,7 @@ inline void FillInterpolatedVelocityOverlapPadding(Lattice& lat, int nx, int ny,
         if (ix < 0 || ix >= nx || iy < 0 || iy >= ny || iz < 0 || iz >= nz) {
           return false;
         }
-        return lat.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet;
+        return BcKindIsFdBoundary(lat.bc_kind(ix, iy, iz));
       },
       [&](int ix, int iy, int iz) {
         return PaddingMaterialNonZero(ix, iy, iz, nx, ny, nz);
@@ -822,7 +890,7 @@ inline void FillOverlapPaddingForMode(Lattice& lat, int nx, int ny, int nz,
           if (ix < 0 || ix >= nx || iy < 0 || iy >= ny || iz < 0 || iz >= nz) {
             return false;
           }
-          return lat.bc_kind(ix, iy, iz) == BcKind::kVelocityDirichlet;
+          return BcKindIsFdBoundary(lat.bc_kind(ix, iy, iz));
         },
         [&](int ix, int iy, int iz) {
           return PaddingMaterialNonZero(ix, iy, iz, nx, ny, nz) &&
@@ -846,7 +914,7 @@ inline void ApplyInterpolatedVelocityBoundaryCells(
   for (int ix = 0; ix < nx; ++ix) {
     for (int iy = 0; iy < ny; ++iy) {
       for (int iz = 0; iz < nz; ++iz) {
-        if (lat.bc_kind(ix, iy, iz) != BcKind::kVelocityDirichlet) {
+        if (!BcKindIsFdBoundary(lat.bc_kind(ix, iy, iz))) {
           continue;
         }
 

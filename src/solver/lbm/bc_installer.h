@@ -51,6 +51,8 @@ inline BcKind BcKindFromSpecType(DomainBcType t) {
       return BcKind::kVelocityDirichlet;
     case DomainBcType::kOutflow:
       return BcKind::kOutflow;
+    case DomainBcType::kInterpolatedPressure:
+      return BcKind::kPressureDirichlet;
   }
   return BcKind::kBulk;
 }

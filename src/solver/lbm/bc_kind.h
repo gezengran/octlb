@@ -28,7 +28,15 @@ enum class BcKind : std::uint8_t {
 // kBouzidi is included because a Bouzidi surface cell reflects its own
 // wall-pointing links (Bouzidi interpolation fires on the *source* side).
 inline bool BcKindReflectsOnPull(BcKind k) {
-  return k == BcKind::kVelocityDirichlet || k == BcKind::kBouzidi;
+  return k == BcKind::kVelocityDirichlet ||
+         k == BcKind::kPressureDirichlet || k == BcKind::kBouzidi;
+}
+
+// FD-boundary cells: PostStream PlaneFd reconstruction (Skordos FD) overwrites
+// these cells each step. Used to gate the PostStream loop and padding partner
+// copy.
+inline bool BcKindIsFdBoundary(BcKind k) {
+  return k == BcKind::kVelocityDirichlet || k == BcKind::kPressureDirichlet;
 }
 
 }  // namespace octlb
