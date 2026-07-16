@@ -178,17 +178,28 @@ add_test(NAME test_lattice_cell_kind
     $<TARGET_FILE:test_lattice_cell_kind>
 )
 
-add_executable(test_bc_dispatcher test_bc_dispatcher.cpp)
+add_executable(test_bc_dispatcher
+  test_bc_dispatcher.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
 
 target_compile_features(test_bc_dispatcher PRIVATE cxx_std_20)
 
 target_link_libraries(test_bc_dispatcher
   PRIVATE
     octlb_lbm
-    GTest::gtest_main
+    octlb_mesh
+    GTest::gtest
+    MPI::MPI_CXX
 )
 
-add_test(NAME test_bc_dispatcher COMMAND test_bc_dispatcher)
+add_test(NAME test_bc_dispatcher
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 1
+    --oversubscribe
+    $<TARGET_FILE:test_bc_dispatcher>
+)
 
 add_executable(test_domain_boundary
   test_domain_boundary.cpp

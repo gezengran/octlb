@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "dynamics/lbm.h"
+#include "src/solver/lbm/bc_dispatcher.h"
 #include "src/solver/lbm/boundary/bounce_back.h"
 #include "src/solver/lbm/boundary/interpolated_velocity.h"
 #include "src/solver/lbm/boundary/outflow_bc.h"
@@ -162,8 +163,9 @@ void ConcreteDomainBoundaryHandler::apply(CollideRhoStats* rho_stats,
                                           double average_rho,
                                           bool use_const_rho_bgk) {
   if (UsesInterpolatedVelocity() && boundary_lattice_mode_) {
-    // One octant has six TreeBoundaryFaces; lattice-mode BC updates all
-    // boundary cells in the block, so apply at most once per octant_id.
+    // Per-cell dispatch: each boundary cell collides per its own BcKind, so
+    // mixed BCs coexist within a block. One octant has six TreeBoundaryFaces;
+    // dispatch once per octant_id.
     std::vector<bool> seen(static_cast<std::size_t>(blocks_.size()), false);
     for (const TreeBoundaryFace& face : faces_) {
       if (seen[static_cast<std::size_t>(face.octant_id)]) {
@@ -171,9 +173,15 @@ void ConcreteDomainBoundaryHandler::apply(CollideRhoStats* rho_stats,
       }
       seen[static_cast<std::size_t>(face.octant_id)] = true;
       DomainBoundaryLattice& lat = blocks_[face.octant_id];
-      boundary::CollideDirichletBoundaryCells<double, Descriptor>(
-          lat, nx_, ny_, nz_, omega_, specs_, rho_stats, average_rho,
-          use_const_rho_bgk);
+      for (int ix = 0; ix < nx_; ++ix) {
+        for (int iy = 0; iy < ny_; ++iy) {
+          for (int iz = 0; iz < nz_; ++iz) {
+            BcDispatcher::collide(lat, ix, iy, iz, nx_, ny_, nz_, omega_,
+                                  specs_, rho_stats, average_rho,
+                                  use_const_rho_bgk);
+          }
+        }
+      }
     }
     return;
   }
@@ -195,30 +203,18 @@ void ConcreteDomainBoundaryHandler::collide_interleaved_with(
   if (!UsesInterpolatedVelocity() || !boundary_lattice_mode_) {
     return;
   }
-  const double omega = omega_;
-  const double avg = average_rho;
+  // OpenLB Dominant spatial order: per-cell dispatch walks iX,iY,iZ so each
+  // boundary cell collides before its inward fluid neighbors. Centralized in
+  // BcDispatcher so mixed BCs coexist.
   for (int ix = 0; ix < nx_; ++ix) {
     for (int iy = 0; iy < ny_; ++iy) {
       for (int iz = 0; iz < nz_; ++iz) {
-        const BcKind kind = lat.bc_kind(ix, iy, iz);
-        if (kind == BcKind::kBulk) {
-          if (use_const_rho_bgk) {
-            lat.collide_const_rho_at(ix, iy, iz, omega, avg, rho_stats);
-          } else {
-            auto cell = lat.get(ix, iy, iz);
-            double rho = 0.0;
-            double u[3]{};
-            cell.computeRhoU(rho, u);
-            olb::lbm<Descriptor>::bgkCollision(cell, rho, u, omega);
-          }
-        } else if (kind == BcKind::kVelocityDirichlet) {
-          boundary::CollideDirichletBoundaryCellAt<double, Descriptor>(
-              lat, ix, iy, iz, nx_, ny_, nz_, omega, specs_, rho_stats);
-        }
+        BcDispatcher::collide(lat, ix, iy, iz, nx_, ny_, nz_, omega_, specs_,
+                              rho_stats, average_rho, use_const_rho_bgk);
       }
     }
   }
-  lat.collide_overlap_padding_bgk(omega);
+  lat.collide_overlap_padding_bgk(omega_);
 }
 
 void ConcreteDomainBoundaryHandler::apply_post_stream() {
