@@ -70,8 +70,30 @@ inline void PrescribedBoundaryU(int ix, int iy, int iz, int nx, int ny, int nz,
                                 const std::vector<DomainBcSpec>& specs,
                                 double u[3]) {
   u[0] = u[1] = u[2] = 0.0;
-  // OpenLB cavity3d: material 3 (moving lid) covers the interior top face only;
-  // top edges/corners stay material 2 with u=0.
+  // A velocity-Dirichlet face with an inlet_field prescribes u per cell (e.g.
+  // cylinder3d's uniform/ Poiseuille inlet). Pick the field on any face the
+  // cell touches (flat inlet cell -> its face; inlet/wall corner -> the inlet).
+  const struct {
+    bool on;
+    FaceDir dir;
+  } faces[6] = {
+      {ix == 0, FaceDir::kXMin},    {ix == nx - 1, FaceDir::kXMax},
+      {iy == 0, FaceDir::kYMin},    {iy == ny - 1, FaceDir::kYMax},
+      {iz == 0, FaceDir::kZMin},    {iz == nz - 1, FaceDir::kZMax}};
+  for (const auto& f : faces) {
+    if (!f.on) {
+      continue;
+    }
+    const DomainBcSpec spec = FindSpec(specs, f.dir);
+    if (spec.inlet_field) {
+      double u_d[3]{};
+      spec.inlet_field->velocity(ix, iy, iz, 0.0, u_d);
+      for (int d = 0; d < 3; ++d) u[d] = u_d[d];
+      return;
+    }
+  }
+  // OpenLB cavity3d fallback (no inlet_field): material 3 (moving lid) covers
+  // the interior top face only; top edges/corners stay material 2 with u=0.
   if (IsInteriorTopLidCell(ix, iy, iz, nx, ny, nz)) {
     const DomainBcSpec spec = FindSpec(specs, FaceDir::kYMax);
     for (int d = 0; d < 3; ++d) {

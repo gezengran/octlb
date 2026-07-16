@@ -40,9 +40,10 @@ ConcreteDomainBoundaryHandler::ConcreteDomainBoundaryHandler(
       boundary_lattice_mode_(boundary_lattice_mode),
       padding_mode_(padding_mode) {}
 
-bool ConcreteDomainBoundaryHandler::UsesInterpolatedVelocity() const {
+bool ConcreteDomainBoundaryHandler::UsesFdBoundary() const {
   for (const DomainBcSpec& spec : specs_) {
-    if (spec.type == DomainBcType::kInterpolatedVelocity) {
+    if (spec.type == DomainBcType::kInterpolatedVelocity ||
+        spec.type == DomainBcType::kInterpolatedPressure) {
       return true;
     }
   }
@@ -162,7 +163,7 @@ void ConcreteDomainBoundaryHandler::ApplyVelocityGhost(
 void ConcreteDomainBoundaryHandler::apply(CollideRhoStats* rho_stats,
                                           double average_rho,
                                           bool use_const_rho_bgk) {
-  if (UsesInterpolatedVelocity() && boundary_lattice_mode_) {
+  if (UsesFdBoundary() && boundary_lattice_mode_) {
     // Per-cell dispatch: each boundary cell collides per its own BcKind, so
     // mixed BCs coexist within a block. One octant has six TreeBoundaryFaces;
     // dispatch once per octant_id.
@@ -194,13 +195,13 @@ void ConcreteDomainBoundaryHandler::apply(CollideRhoStats* rho_stats,
 }
 
 bool ConcreteDomainBoundaryHandler::collide_boundary_before_bulk() const {
-  return UsesInterpolatedVelocity() && boundary_lattice_mode_;
+  return UsesFdBoundary() && boundary_lattice_mode_;
 }
 
 void ConcreteDomainBoundaryHandler::collide_interleaved_with(
     BlockLattice<double, olb::descriptors::D3Q19<>>& lat,
     CollideRhoStats* rho_stats, double average_rho, bool use_const_rho_bgk) {
-  if (!UsesInterpolatedVelocity() || !boundary_lattice_mode_) {
+  if (!UsesFdBoundary() || !boundary_lattice_mode_) {
     return;
   }
   // OpenLB Dominant spatial order: per-cell dispatch walks iX,iY,iZ so each
@@ -218,7 +219,7 @@ void ConcreteDomainBoundaryHandler::collide_interleaved_with(
 }
 
 void ConcreteDomainBoundaryHandler::apply_post_stream() {
-  if (!UsesInterpolatedVelocity() || !boundary_lattice_mode_) {
+  if (!UsesFdBoundary() || !boundary_lattice_mode_) {
     return;
   }
   std::vector<bool> seen(static_cast<std::size_t>(blocks_.size()), false);

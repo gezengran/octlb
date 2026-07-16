@@ -20,7 +20,9 @@
 #include "src/solver/field/block_collection.h"
 #include "src/solver/field/ghost_schedule.h"
 #include "src/solver/lbm/block_lattice.h"
+#include "src/solver/lbm/boundary/inlet_velocity_field.h"
 #include "src/solver/lbm/bouzidi_link_data.h"
+#include "src/solver/lbm/bc_installer.h"
 #include "src/solver/lbm/domain_boundary_handler.h"
 #include "src/solver/lbm/drag_postprocessor.h"
 #include "src/solver/lbm/lattice_material_init.h"
@@ -73,14 +75,26 @@ inline GeometryAssembly CylinderAssembly(const std::string& stl_path) {
 }
 
 inline std::vector<DomainBcSpec> CylinderBcSpecs(double u_inlet) {
-  return {
-      {FaceDir::kXMin, DomainBcType::kMovingLid, {u_inlet, 0.0, 0.0}},  // inlet
-      {FaceDir::kXMax, DomainBcType::kOutflow, {0.0, 0.0, 0.0}},         // outlet
-      {FaceDir::kYMin, DomainBcType::kNoSlip, {0.0, 0.0, 0.0}},          // wall
-      {FaceDir::kYMax, DomainBcType::kNoSlip, {0.0, 0.0, 0.0}},          // wall
-      {FaceDir::kZMin, DomainBcType::kNoSlip, {0.0, 0.0, 0.0}},          // wall
-      {FaceDir::kZMax, DomainBcType::kNoSlip, {0.0, 0.0, 0.0}},          // wall
-  };
+  std::vector<DomainBcSpec> specs;
+  DomainBcSpec inlet;
+  inlet.face = FaceDir::kXMin;
+  inlet.type = DomainBcType::kInterpolatedVelocity;  // velocity Dirichlet inlet
+  inlet.inlet_field = std::make_shared<boundary::UniformInletProfile>(
+      std::array<double, 3>{u_inlet, 0.0, 0.0});
+  specs.push_back(inlet);
+  DomainBcSpec outlet;
+  outlet.face = FaceDir::kXMax;
+  outlet.type = DomainBcType::kInterpolatedPressure;  // pressure outlet p=0
+  outlet.rho_target = 1.0;
+  specs.push_back(outlet);
+  for (FaceDir wall : {FaceDir::kYMin, FaceDir::kYMax, FaceDir::kZMin,
+                       FaceDir::kZMax}) {
+    DomainBcSpec s;
+    s.face = wall;
+    s.type = DomainBcType::kInterpolatedVelocity;  // FD no-slip (u=0), cavity3d-proven
+    specs.push_back(s);
+  }
+  return specs;
 }
 
 struct Cylinder3dCase {
@@ -129,9 +143,16 @@ struct Cylinder3dCase {
         coupler(comm, face_pairs, forest, blocks, n, n, n, omega),
         domain_bc(blocks, face_pairs.tree_boundary_faces(),
                   CylinderBcSpecs(u_inlet), n, n, n, omega,
-                  /*boundary_lattice_mode=*/false),
+                  /*boundary_lattice_mode=*/true),
         loop(forest, blocks, ghosts, coupler, domain_bc, omega,
-             /*use_const_rho_bgk=*/false) {}
+             /*use_const_rho_bgk=*/false) {
+      // Per-cell dispatch: stamp the domain-outer face cells (inlet/outlet/
+      // walls) per spec. The cylinder surface keeps kBouzidi from
+      // initialize_from_material; the fluid interior keeps kBulk.
+      bc::StampTreeBoundaryCells(blocks, face_pairs.tree_boundary_faces(),
+                                 CylinderBcSpecs(u_inlet), n, n, n,
+                                 /*boundary_lattice_mode=*/true);
+    }
 
   void advance_steps(int num_steps) {
     for (int step = 0; step < num_steps; ++step) {

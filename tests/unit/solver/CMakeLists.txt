@@ -201,6 +201,34 @@ add_test(NAME test_bc_dispatcher
     $<TARGET_FILE:test_bc_dispatcher>
 )
 
+add_executable(test_bc_installer
+  test_bc_installer.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
+
+target_compile_features(test_bc_installer PRIVATE cxx_std_20)
+
+target_include_directories(test_bc_installer
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_link_libraries(test_bc_installer
+  PRIVATE
+    octlb_lbm
+    octlb_mesh
+    GTest::gtest
+    MPI::MPI_CXX
+)
+
+add_test(NAME test_bc_installer
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 1
+    --oversubscribe
+    $<TARGET_FILE:test_bc_installer>
+)
+
 add_executable(test_domain_boundary
   test_domain_boundary.cpp
   ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp

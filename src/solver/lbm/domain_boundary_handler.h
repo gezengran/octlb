@@ -112,7 +112,9 @@ class ConcreteDomainBoundaryHandler : public DomainBoundaryHandler {
   // Per-cell velocity ghost fill: PrescribedVelocity(spec, ix,iy,iz,t) -> Zou-He.
   void ApplyVelocityGhost(const DomainBcSpec& spec, int ix, int iy, int iz,
                           double* ghost, const double* interior, int face);
-  bool UsesInterpolatedVelocity() const;
+  // Any face uses a per-cell FD boundary (InterpolatedVelocity inlet/lid or
+  // InterpolatedPressure outlet) -> per-cell dispatch path is active.
+  bool UsesFdBoundary() const;
 
   BlockCollection<DomainBoundaryLattice>& blocks_;
   std::vector<TreeBoundaryFace> faces_;

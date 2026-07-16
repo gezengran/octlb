@@ -112,6 +112,42 @@ class PoiseuilleInletProfile : public InletVelocityField {
   double ramp_end_t_;
 };
 
+// Spatially uniform inlet velocity: u = ramp(t) * u_const. Used by cases that
+// prescribe a constant free-stream inlet (e.g. cylinder3d Schäfer-Turek sanity)
+// on a velocity-Dirichlet face, without a duct profile.
+class UniformInletProfile : public InletVelocityField {
+ public:
+  UniformInletProfile(std::array<double, 3> u_const, double ramp_end_t = 0.0)
+      : u_const_(u_const), ramp_end_t_(ramp_end_t) {}
+
+  void velocity(int /*ix*/, int /*iy*/, int /*iz*/, double t,
+                double u[3]) const override {
+    const double r = Ramp(t);
+    for (int d = 0; d < 3; ++d) {
+      u[d] = r * u_const_[d];
+    }
+  }
+
+ private:
+  double Ramp(double t) const {
+    if (ramp_end_t_ <= 0.0) {
+      return 1.0;
+    }
+    double x = t / ramp_end_t_;
+    if (x < 0.0) {
+      x = 0.0;
+    } else if (x > 1.0) {
+      x = 1.0;
+    }
+    const double x2 = x * x;
+    const double x3 = x2 * x;
+    return x3 * (10.0 + x * (-15.0 + 6.0 * x));
+  }
+
+  std::array<double, 3> u_const_;
+  double ramp_end_t_;
+};
+
 }  // namespace boundary
 }  // namespace octlb
 
