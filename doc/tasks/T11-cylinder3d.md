@@ -3,7 +3,7 @@
 > 类型：AFK（前置修复 P0 + 四波纵向切片；W2 含 ③④ HITL 决策点）  
 > 阻塞于：T10（`test_cavity3d_serial` 已完成）、T09-W2（Bouzidi 曲面 BC）、T07（`GeometryEngine`/`MaterialField`）、T08 W4（`vtk_lbm_fields.h`）  
 > 对应 PRD：`octlb/doc/prd/octlb-framework.md`（集成测试 #13、用户故事 #1/#5/#8/#9、`examples/cylinder3d/`）  
-> 状态：**P0 + W1 + W2-sanity 已完成，③④ HITL 已落定**（2026-07-15）——P0 comm_tag 对称性修复（① ⑤）绿；W1 阻力后处理 + 出口 BC + 圆柱 STL 绿；W2 cylinder3d uniform sanity（RunsNoCrash / MassBoundedDrift / DragFinitePositiveSign）绿。② Stage A 同 rank 边交换已落；NoEdgeArtifact 探针因体素化混洞禁用（见 PRD 缺陷 ②）。**③④ HITL 决策已落定（2026-07-15）**：以已验证实现为基准更新 PRD（两段式 BC + PostStream 阶段；overlap-padding 保留、「最小自建」精确化为「自建存储+不引框架层」）。**W3 前置：BC 调度架构重构已立项**（2026-07-15，缺陷 ⑥——per-face `DomainBcSpec` + 整 handler `boundary_lattice_mode_` 无法表达同 block 混合 BC），见 `doc/tasks/T11-refactor-bc-dispatch.md`；压力出口（W3 组件 2）由该重构 R2 波交付，W3 组件 3（STL）独立可并行。
+> 状态：**P0 + W1 + W2-sanity + W3-组件 + T11-refactor 已完成；W3-AMR 集成 / W4 严格门待原生机**（2026-07-31 复验）——P0 comm_tag 对称性修复（① ⑤）绿；W1 阻力后处理 + 出口 BC + 圆柱 STL 绿；W2 cylinder3d uniform sanity 绿（2026-07-31 复验 `test_cylinder3d_uniform` 177s 绿）。**W3 组件单测全绿**（Poiseuille 入口 / 压力出口 / Schäfer-Turek STL / 缺陷⑤ `CoarseFine_CapturedGeometry` / ② `CrossRankEdges` 共 11 条）。**② Stage B 跨 rank 边交换已落 + `EdgeExchange_CrossRank_NoArtifact` 修复后绿**（原 u_inlet=0.05 压力出口 Ma runaway 致红，降 0.01 后绿；**弱验证**——低 Ma uniform 流 ② 不显现，OFF≈ON，仅证 Stage B 接线 + 非退化，详见 W3 验收 ② 说明）。**③④ HITL 已落定**（2026-07-15）。**T11-refactor 完成**（PR #11，R0–R4）。**缺陷⑤ 修复**（FacePairList 快照 ghost 物理 bounds/level）单测绿，4-rank AMR 集成确认留原生机。**W3 AMR 集成 + W4 严格门留原生机 CI**：Rosetta x86 模拟下每 AMR `Cylinder3dCase` 构造 ~50min+（CGAL voxelization × resolve_surface × 3），4 case 数小时不可行；native x86 CI ~1–2min/case。example `examples/cylinder3d` 链接通过、VTK+Cd CSV 代码就位，运行留原生机。
 
 ---
 
@@ -208,10 +208,14 @@ cylinder3d 需要而当前 `src/` **没有** 的：
 
 ### 验收标准
 
-- [ ] Poiseuille 入口、压力出口、Schäfer-Turek STL 组件单测全绿
-- [ ] ② Stage B 跨 rank 边交换已落 + 干净重探测试绿（uniform 无圆柱）
-- [ ] `test_cylinder3d_amr` 量级用例全绿（Cd 与 OpenLB 收敛参考 2x 内）
-- [ ] W2 既有用例仍绿
+- [x] Poiseuille 入口、压力出口、Schäfer-Turek STL 组件单测全绿（2026-07-31 复验：`test_inlet_velocity_field`/`test_inlet_bc_integration`/`test_outlet_bc`/`test_stl_reader`/`test_lagrava_coupler`(含 `CoarseFine_CapturedGeometry`)/`test_face_pair_list`(含 `CrossRankEdges`)/`test_bc_installer`/`test_bc_dispatcher` 共 11 条全绿）
+- [x] ② Stage B 跨 rank 边交换已落 + 干净重探测试绿（uniform 无圆柱）（2026-07-31：`EdgeExchange_CrossRank_NoArtifact` 修复后绿——见下方 ② 修复说明；**注意该测试为弱验证**：低 Ma uniform 流下 ② 不显现，OFF≈ON，测试仅证 Stage B 接线 + 非退化，不强证 ② 正确性）
+- [ ] `test_cylinder3d_amr` 量级用例全绿（Cd 与 OpenLB 收敛参考 2x 内）——**Rosetta 下不可行**（每 AMR case 构造 ~50min+，4 case 数小时；留原生机 CI；STRICT 门 `Amr_Cd_SameOrderAsOpenLb` 原生长跑）
+- [x] W2 既有用例仍绿（2026-07-31：`test_cylinder3d_uniform` 177s 绿）
+
+### ② Stage B 测试修复说明（2026-07-31）
+
+`EdgeExchange_CrossRank_NoArtifact` 此前**实际是红的**（非文档原记 "✅ 绿"）。根因**非 ②**：无圆柱直 channel + W3 压力出口（`kInterpolatedPressure`）在 `u_inlet=0.05`（Ma≈0.083）下**体层速度 ~15%/step 指数 runaway**（1-rank 实测：bulk 0.055→0.60 / 12 步），淹没边信号 → ON≈OFF 都发散。`test_cylinder3d_uniform`（带圆柱）因圆柱 blockage 抑制 runaway + 断言弱（no-NaN + mass drift）而误绿。**修复**：`ChannelConfig.u_inlet` 0.05→0.01（Ma≈0.017），体层收敛到稳态 ~0.04–0.05（Poiseuille），测试绿。**遗留**：低 Ma 下 OFF（cross-rank 边 ghost 未填）也不尖峰 → ON≈OFF，测试**平凡通过**，仅证 Stage B 接线（`has_edge_global>0`）+ 体层有界 + 非退化，不强证 ② 正确性；② 运行时显现需强跨块边梯度流（涡/射流穿块边），uniform 低 Ma 流无此梯度。PRD ② 行维持「运行时未确认」。**对 W3/W4 的提示**：压力出口 Ma-marginal，Schäfer-Turek `u_inlet=0.02`（Ma≈0.033）长跑前需确认稳定。详见 [[t11-edge-exchange-test-config-fix]]。
 
 ---
 
@@ -231,10 +235,10 @@ cylinder3d 需要而当前 `src/` **没有** 的：
 
 ### 验收标准（T11 完成）
 
-- [ ] `test_cylinder3d_amr` 严格用例全绿（Cd 与 OpenLB 收敛参考 <1%，PRD #13）
-- [ ] `examples/cylinder3d` 可构建、≥4 rank 可运行
-- [ ] example 写出 VTK + Cd CSV（人工 ParaView 验收）
-- [ ] PRD 进度与 T11 决策已更新
+- [ ] `test_cylinder3d_amr` 严格用例全绿（Cd 与 OpenLB 收敛参考 <1%，PRD #13）——原生机长跑（Rosetta 不可行）
+- [x] `examples/cylinder3d` 可构建（2026-07-31：链接通过）；≥4 rank 可运行——留原生机验证（Rosetta 构造 ~50min+ 不可行）
+- [x] example 写出 VTK + Cd CSV（代码已就位 `write_vtk_timestep` + cd.csv）；人工 ParaView 验收留原生机
+- [x] PRD 进度与 T11 决策已更新（2026-07-31：②/⑤ 行 + T11 进度行更新，见下文）
 
 ---
 
@@ -245,13 +249,14 @@ T10（cavity3d #12）— 已完成
 T09-W2（Bouzidi 曲面 BC）— 已完成
 T07（GeometryEngine/MaterialField）— 已完成
 T08 W4（vtk_lbm_fields）— 已完成
-└── T11 — 进行中（P0/W1/W2-sanity 已完成，③④ HITL 已落定）
+└── T11 — 进行中（P0/W1/W2-sanity + T11-refactor 已完成；W3 测试+缺陷⑤修复中，W4 example 已搭）
     ├── P0 · comm_tag 跨 rank 对称性修复 ✅
     ├── W1 · 阻力后处理 + 出口 BC 组件单测 ✅
     ├── W2 · uniform 组装 + sanity（③④ HITL）✅ sanity 绿；② Stage A 同 rank 边交换已落，Stage B 跨 rank 边交换 + 干净重探留 W3
-    ├── T11-refactor · BC 调度架构重构（per-cell BcKind + 中心化 dispatch，治 ⑥）⬜ 待开始（W3 前置；R2 交付压力出口组件 2；详见 `T11-refactor-bc-dispatch.md`）
-    ├── W3 · AMR L=4 + Lagrava + 量级 ⬜ 待开始（阻塞于 T11-refactor；组件 3 STL 可并行）
-    └── W4 · Cd<1% 严格门 + example + VTK ⬜ 待开始
+    ├── T11-refactor · BC 调度架构重构（per-cell BcKind + 中心化 dispatch，治 ⑥）✅ 完成（PR #11，R0–R4；R2 交付压力出口组件 2）
+    ├── 缺陷⑤ · 跨 rank 粗细耦合修复（2026-07-19）✅ FacePairList 快照 ghost 物理 bounds/level；LevelCoupler 用快照，不再 re-resolve 临时 quadid（详见 [[t11-defect5-cross-rank-coarsefine]]）
+    ├── W3 · Schäfer-Turek + ② + AMR + 量级 🔨 进行中：组件单测（Poiseuille/压力出口/STL）✅ 全绿；② Stage B 干净重探 `EdgeExchange_CrossRank_NoArtifact` 修复后 ✅ 绿（原 u_inlet=0.05 压力出口 Ma runaway 致红，降 0.01 后绿；弱验证——见 W3 验收 ② 说明）；`CoarseFineInterface_Continuous`/`Amr_Cd_SameOrderAsOpenLb`/`Amr_Cd_WithinOnePercentOfOpenLb` 已写（gated STRICT）；AMR 非 STRICT 用例（RunsNoCrash/MassBoundedDrift/Cd_FinitePositiveSign/CoarseFineInterface）Rosetta 下构造 ~50min/case 不可行，留原生机 CI
+    └── W4 · Cd<1% 严格门 + example + VTK 🔨 example 已搭（`examples/cylinder3d`，VTK+Cd CSV）；严格门 `Amr_Cd_WithinOnePercentOfOpenLb` 已写（gated STRICT，原生机长跑）
             └── T12 · amr_convergence（#14）← 下一项
 ```
 

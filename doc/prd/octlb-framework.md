@@ -464,7 +464,7 @@ target_link_libraries(octlb_lbm PUBLIC MPI::MPI_CXX)
 | **T10-W1** | `unit_converter` | T04 | **测试绿** | `test_unit_converter`（见 `T10-cavity3d.md`） |
 | **T10-W2** | cavity 组装 + 冒烟 | T10-W1、T09-W1、T06 | **测试绿** | `test_cavity3d_serial`（smoke） |
 | **T10-W3** | OpenLB #12 + `examples/cavity3d` + VTK P1 | T10-W2、T08 W4 | **测试绿** | #12、`examples/cavity3d` |
-| **T11** | `cylinder3d` + 进出口 BC | T09-W2、#12 | 进行中（P0/W1/W2-sanity 绿，③④ 落定；W3 待开始） | #13 |
+| **T11** | `cylinder3d` + 进出口 BC | T09-W2、#12 | 进行中（P0/W1/W2-sanity/W3-组件/T11-refactor 绿，③④ 落定；W3-AMR 集成 + W4 严格门待原生机 CI） | #13 |
 | **T11-refactor** | BC 调度架构重构（per-cell `BcKind` + 中心化 dispatch） | T09-W1/W2、T11-W2-sanity | 未开始（2026-07-15 立项） | 交付 T11 W3 组件 2；详见 `T11-refactor-bc-dispatch.md` |
 | **T12** | AMR 收敛 | T11 | 未开始 | #14 |
 
@@ -499,10 +499,10 @@ T01–T10 已绿，但审计已实现栈发现若干潜伏缺陷——**根因�
 | # | 缺陷 | 置信度 | 位置 |
 |---|------|--------|------|
 | ① | `comm_tag` 跨 rank 不对称（per-rank 冲突集不同→rehash 路径分叉→同面两 rank 不同 tag→`Isend`/`Irecv` 不匹配）；且 rehash mask 未对齐 `MPI_TAG_UB`，可超限 | CONFIRMED 读码 | `mesh/topology/face_pair_list.cpp:121,129,137` |
-| ② | `GhostSchedule` 只刷面层 N×N，D3Q19 的 12 条对角方向在块边/角读 12 条边 ghost 线，未被任何面交换填充 | 合同层 CONFIRMED；运行时未确认 | `solver/lbm/block_lattice.cpp:15-29`（`face_buffer_count=ny*nz*kQ`）+ 本 PRD「每面单层 N×N」契约。**2026-07-11 更新**：`FacePackable` 概念已扩展 `pack_edge`/`unpack_edge`，`BlockLattice` 实现 12 条边 ghost 线 pack/unpack，`GhostSchedule` 加同 rank 边交换（face 邻居组合 `face_nbr[face_nbr[A][d1]][d2]`）——「Stage A 同 rank 边交换」已落。但 W2 multi-vs-single 探针**未能确认 ② 运行时显现**：探针被体素化混洞污染（per-octant vs whole-grid 在圆柱表面的 solid/fluid 分类差异；在 `f=f_eq−t` 约定下 solid 与 fluid-at-rest 都是 f=0→rho=1,u=0，step0 不可见，step1 才发散），已禁用该探针。② 需干净重探（无圆柱 multi-vs-single，或 toggle 有/无边交换）。跨 rank 边交换（Stage B，需 p4est corner callback 取对角邻居 rank）留 W3。 |
+| ② | `GhostSchedule` 只刷面层 N×N，D3Q19 的 12 条对角方向在块边/角读 12 条边 ghost 线，未被任何面交换填充 | 合同层 CONFIRMED；运行时未确认 | `solver/lbm/block_lattice.cpp:15-29`（`face_buffer_count=ny*nz*kQ`）+ 本 PRD「每面单层 N×N」契约。**2026-07-11 更新**：`FacePackable` 概念已扩展 `pack_edge`/`unpack_edge`，`BlockLattice` 实现 12 条边 ghost 线 pack/unpack，`GhostSchedule` 加同 rank 边交换（face 邻居组合 `face_nbr[face_nbr[A][d1]][d2]`）——「Stage A 同 rank 边交换」已落。**2026-07-31 更新**：**Stage B 跨 rank 边交换已落**——`FacePairList` 加 `CrossRankEdge`（p4est edge callback 取对角邻居 rank + 对称 comm_tag），`GhostSchedule` 跨 rank 边 MPI；`test_face_pair_list::CrossRankEdges_EnumeratedSymmetric` + `test_ghost_schedule::EdgeExchange_CrossRank_FillsDiagonalGhost` 绿。**但 ② 运行时仍未确认显现**：`EdgeExchange_CrossRank_NoArtifact`（uniform 无圆柱、ON/OFF toggle）在低 Ma（u_inlet=0.01）稳定基下 OFF≈ON（cross-rank 边 ghost 未填也不尖峰），测试**平凡通过**——仅证 Stage B 接线 + 非退化，不强证 ② 正确性。② 运行时显现需强跨块边梯度流（涡/射流穿块边），uniform 低 Ma 流无此梯度。**新发现（非 ②）**：无圆柱直 channel + W3 压力出口（`kInterpolatedPressure`）在 u_inlet=0.05（Ma≈0.083）下体层速度 ~15%/step 指数 runaway（`test_cylinder3d_uniform` 带圆柱误绿）；`EdgeExchange` 测试降 u_inlet=0.01 修复。压力出口 Ma-marginal，W3/W4（u_inlet=0.02, Ma≈0.033）长跑前需确认稳定。详见 `doc/tasks/T11-cylinder3d.md` W3 验收 ② 说明。 |
 | ③ | TimeLoop 阶段顺序：早期本文档为 `collide→exchange→domain_bc.apply→stream`，实际为 `collide→domain_bc.apply→exchange→stream→apply_post_stream`（InterpolatedVelocity/PlaneFd 需 stream 后邻居） | **已决策落定（2026-07-15）**——以已验证实现为基准，本文档已更新为两段式 BC + PostStream 阶段为正式 spec；不改变 seam 设计原则 | `solver/lbm/time_loop/time_loop.h:175-209` |
 | ④ | `BlockLattice` 带 overlap-padding/PostStream/rotate 机制（`collide_overlap_padding_bgk` 等），早期本文档「最小自建 BlockLattice」未预见 | **已决策落定（2026-07-15）**——保留该机制（cavity3d ~2% 校准所需），「最小自建」立论精确化为「自建存储+不引框架层」，padding 属存储内部细节；硬不变量不变 | `solver/lbm/block_lattice.h` |
-| ⑤ | `LevelCoupler` 继承 ①：`MpiBatch` 按 `(peer,tag)` 去重——tag 碰撞把两个不同粗细面并成一 batch→错误宏量 | PROPAGATES | `solver/lbm/level_coupler.cpp:128,246` |
+| ⑤ | `LevelCoupler` 继承 ①：`MpiBatch` 按 `(peer,tag)` 去重——tag 碰撞把两个不同粗细面并成一 batch→错误宏量 | **已修复**（P0 根因消除 + 2026-07-19 跨 rank 粗细快照） | `solver/lbm/level_coupler.cpp:128,246`。**P0 根因消除**：per rank-pair 确定性枚举使 tag 对内唯一，⑤ 的 tag 碰撞传播源消除。**2026-07-19 第二层修复（跨 rank 粗细耦合，[[t11-defect5-cross-rank-coarsefine]]）**：`FacePairList` 在 iterate 期间（ghost 活着）用 `MeshForestAccess::QuadrantBounds(forest,treeid,quad)` 快照每侧 `coarse_bounds`/`coarse_level`/`fine_bounds[4]`/`fine_level` 到 `CoarseFineFace`；`LevelCoupler::AppendFaceCouplingPoints` 改用快照值，不再 re-resolve 远端 ghost 的 transient `quadid`（构造完即失效→越界抛错）。单测 `test_lagrava_coupler::CoarseFine_CapturedGeometry_ConstructsNoThrow` 绿（2:1 level、正体积 bounds、构造不抛）；4-rank AMR 真实流确认留 `test_cylinder3d_amr::MultiRank_RunsNoCrash`（原生机）。 |
 | ⑥ | BC 调度架构：per-face `DomainBcSpec` + 整 handler `boundary_lattice_mode_` 单一布尔 → 同 block 内混合 BC（入口速度+出口压力+圆柱 Bouzidi+壁 bounce-back）无法表达；`UsesInterpolatedVelocity()` 门控使 `apply()` 把所有 `kBoundary` 格统一当 Dirichlet 速度（含圆柱表面）。每接入 BC 组合不同的新算例需在唯一 FD 路径加 `spec.type` 分支 | CONFIRMED 读码（`examples/cylinder3d/cylinder3d_case.h:24` 注释自证） | `solver/lbm/domain_boundary_handler.h:42-49`、`domain_boundary_handler.cpp:164-186` |
 
 **治理路径（T11 分波，oracle 三阶递进）**：
@@ -511,7 +511,7 @@ T01–T10 已绿，但审计已实现栈发现若干潜伏缺陷——**根因�
 - **W1**：阻力/Cd 后处理器（momentum-exchange，全新）+ 出口出流 BC（全新）组件单测；备圆柱 STL fixture。
 - **W2 uniform cylinder3d**（多 rank，oracle=sanity：Cd 有限/符号正确/质量守恒/无 NaN）：**已完成**——`test_cylinder3d_uniform`（RunsNoCrash / MassBoundedDrift / DragFinitePositiveSign）全绿；legacy BC（Zou-He 入口 + kOutflow 出口 + kNoSlip 壁 + Bouzidi 圆柱）绕开 ④padding 与 InterpolatedVelocity/圆柱 kBoundary 冲突。NoEdgeArtifact（② 探针）因 multi-vs-single 体素化混洞**禁用**（见缺陷 ②）。**③④ HITL 已落定（2026-07-15）**：③ 以已验证实现（两段式 BC + PostStream）为基准更新 PRD；④ 保留 overlap-padding、PRD「最小自建」精确化为「自建存储+不引框架层」。W2 仍用 legacy BC 路径跑 sanity，InterpolatedVelocity/padding 路径在 W3/W4 切入。
 - **W3 前置 · BC 调度架构重构（治 ⑥，T11-refactor）**：移植 OpenLB「per-cell + material 映射」架构思想为 OctLB「per-cell `BcKind` 枚举 + 中心化 `BcDispatcher`」（不引框架层、无虚函数；枚举失效再切多态兜底）；`MaterialKind` 保持几何 only，`BcInstaller` 求解器侧 stamp；移除 `boundary_lattice_mode_` 全局门控，混合 BC 自由共存。分 R0–R4 五波 TDD 推进，**每波保持 T01–T10 既有 ctest 全绿**（#12 L2<2% 不退化为硬门）。压力出口 `kPressureDirichlet`（T11 W3 组件 2）作为首个新客户在 R2 落位。详见 `doc/tasks/T11-refactor-bc-dispatch.md`。
-- **W3 AMR L=4 + Lagrava**（oracle=量级：Cd 同量级/2x 内）：加几何 AMR + `LevelCoupler` 粗细耦合 + 跨 rank 粗细面（⑤ 路径首次真实流运行）；② Stage A 同 rank 边交换已落，**Stage B 跨 rank 边交换**（p4est corner callback 取对角邻居 rank + 跨 rank 边 MPI）在本波补；② 干净重探（无圆柱 multi-vs-single 或 toggle 对比）也在此波。
+- **W3 AMR L=4 + Lagrava**（oracle=量级：Cd 同量级/2x 内）：加几何 AMR + `LevelCoupler` 粗细耦合 + 跨 rank 粗细面（⑤ 路径首次真实流运行）；② Stage A 同 rank 边交换已落，**Stage B 跨 rank 边交换已落**（p4est edge callback 取对角邻居 rank + 对称 comm_tag + 跨 rank 边 MPI）。**2026-07-31 进度**：W3 组件单测全绿（Poiseuille/压力出口/STL/缺陷⑤/② Stage B）；`EdgeExchange_CrossRank_NoArtifact` 修复后绿（u_inlet 0.05→0.01 修压力出口 Ma runaway；弱验证——低 Ma ② 不显现，见缺陷 ② 行）；AMR 集成用例（`RunsNoCrash`/`MassBoundedDrift`/`Cd_FinitePositiveSign`/`CoarseFineInterface_Continuous`）Rosetta 下构造 ~50min/case 不可行，留原生机 CI；量级门 `Amr_Cd_SameOrderAsOpenLb`（STRICT）原生长跑。
 - **W4 Cd<1% 严格门**：参数对齐 OpenLB cylinder3d 参考、长时稳态、Cd<1%，验收 #13。
 
 详见 `doc/tasks/T11-cylinder3d.md`。
@@ -559,7 +559,7 @@ OctLB 应完整使用 p4est 提供的通信接口，不重造轮子：
 ## 需求完成情况
 
 > 状态说明：`未开始` / `开发中` / `测试绿` / `完成`  
-> **当前进度（2026-07-15）**：T01–T10 已绿（单元 + 集成 #12 `test_cavity3d_serial`）；`examples/cavity3d` 可跑；审计发现已实现栈缺陷 ①–⑤（见「已知缺陷与治理路径」），**T11** cylinder3d（#13）P0/W1/W2-sanity 已绿、③④ HITL 已落定、W3 待开始（见 `doc/tasks/T11-cylinder3d.md`）；W3 推进时发现 BC 调度架构缺陷 ⑥，立项 **T11-refactor**（per-cell `BcKind` + 中心化 dispatch，见 `doc/tasks/T11-refactor-bc-dispatch.md`）作为 W3 前置，压力出口作首个新客户；T12 AMR 收敛未开始（依赖 T11）。
+> **当前进度（2026-07-31）**：T01–T10 已绿（单元 + 集成 #12 `test_cavity3d_serial`）；`examples/cavity3d` 可跑；审计发现已实现栈缺陷 ①–⑥（见「已知缺陷与治理路径」，①⑤ 已修、② Stage B 已落但运行时未确认显现、③④ 已落定、⑥ 已由 T11-refactor 治）。**T11** cylinder3d（#13）：P0/W1/W2-sanity/W3-组件单测/T11-refactor 绿（2026-07-31 复验 `test_cylinder3d_uniform` 177s 绿 + W3 组件 11 条全绿 + `EdgeExchange_CrossRank_NoArtifact` 修复后绿）；③④ HITL 已落定；**W3 AMR 集成 + W4 严格门待原生机 CI**（Rosetta x86 模拟下 AMR `Cylinder3dCase` 构造 ~50min+，4 case 数小时不可行；native x86 CI ~1–2min/case；Cd<1% 严格门原生长跑）。`examples/cylinder3d` 链接通过、VTK+Cd CSV 就位（运行留原生机）。T12 AMR 收敛未开始（依赖 T11）。
 
 ### Mesh 模块
 
