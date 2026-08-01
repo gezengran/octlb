@@ -28,6 +28,16 @@ using BoxIterator = std::vector<CgalBbox>::iterator;
 using CgalBoxHandle =
     CGAL::Box_intersection_d::Box_with_handle_d<double, 3, BoxIterator>;
 
+// AABB tree over the triangle vector for accelerated box/ray intersection
+// queries (voxelization hot path). Built once per surface in from_soup; the
+// owning vector must outlive the tree (it does -- it is a member, populated in
+// from_soup before the tree and never reallocated after).
+using TriangleConstIterator = std::vector<CgalTriangle>::const_iterator;
+using AABBPrimitive =
+    CGAL::AABB_triangle_primitive<Kernel, TriangleConstIterator>;
+using AABBTraits = CGAL::AABB_traits<Kernel, AABBPrimitive>;
+using AABBTree = CGAL::AABB_tree<AABBTraits>;
+
 }  // namespace voxelization
 }  // namespace octlb
 

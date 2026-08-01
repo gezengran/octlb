@@ -52,12 +52,51 @@ bool IsDegenerate(const CgalTriangle& tri) {
   return CGAL::collinear(tri.vertex(0), tri.vertex(1), tri.vertex(2));
 }
 
-bool RayParityInsideDirection(const std::vector<CgalTriangle>& tris,
-                            const CgalPoint& query,
-                            const Kernel::Direction_3& dir) {
+// Build an AABB tree over the NON-degenerate triangles of `tris` (CGAL AABB
+// requires non-degenerate primitives) and collect the degenerate ones into
+// `degenerate`. The tree stores const_iterators into `tris`, so `tris` must
+// outlive the tree (it does: it is the owning member cgal_triangles_). Caller
+// tests `degenerate` separately in intersects_box to preserve the original
+// brute-force semantics (which tested every triangle, degenerate or not).
+void BuildAabbAndDegenerate(const std::vector<CgalTriangle>& tris,
+                            voxelization::AABBTree* tree,
+                            std::vector<CgalTriangle>* degenerate) {
+  for (auto it = tris.begin(); it != tris.end(); ++it) {
+    if (IsDegenerate(*it)) {
+      degenerate->push_back(*it);
+      continue;
+    }
+    tree->insert(voxelization::AABBPrimitive(it));
+  }
+  tree->build();
+}
+
+// True if any degenerate triangle intersects the box (the fallback for the
+// degenerate triangles excluded from the AABB tree).
+bool DegenerateIntersectsBox(const std::vector<CgalTriangle>& degenerate,
+                             const voxelization::CgalBbox& query) {
+  for (const CgalTriangle& tri : degenerate) {
+    if (CGAL::do_intersect(tri, query)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// AABB-accelerated ray-parity: bbox-cull via the AABB tree, then exact
+// do_intersect per candidate (degenerate skipped). This reproduces the
+// brute-force count EXACTLY -- same triangle set, same degenerate skip, same
+// CGAL::do_intersect predicates -- only the irrelevant far-away triangles are
+// never tested. Used by CgalSurfaceMesh::is_inside's ray parity path.
+bool RayParityInsideDirectionAabb(const voxelization::AABBTree& tree,
+                                   const CgalPoint& query,
+                                   const Kernel::Direction_3& dir) {
   const Ray ray(query, dir);
+  std::vector<voxelization::AABBTree::Primitive_id> candidates;
+  tree.all_intersected_primitives(ray, std::back_inserter(candidates));
   int hits = 0;
-  for (const CgalTriangle& tri : tris) {
+  for (const voxelization::AABBTree::Primitive_id pid : candidates) {
+    const CgalTriangle& tri = *pid;
     if (IsDegenerate(tri)) {
       continue;
     }
@@ -68,14 +107,15 @@ bool RayParityInsideDirection(const std::vector<CgalTriangle>& tris,
   return (hits % 2) == 1;
 }
 
-bool RayParityInside(const std::vector<CgalTriangle>& tris,
-                     const CgalPoint& query) {
+// AABB-accelerated 3-direction ray parity (majority vote of 3 axis rays).
+bool RayParityInsideAabb(const voxelization::AABBTree& tree,
+                         const CgalPoint& query) {
   int inside_votes = 0;
   const Kernel::Direction_3 dirs[3] = {Kernel::Direction_3(1, 0, 0),
                                        Kernel::Direction_3(0, 1, 0),
                                        Kernel::Direction_3(0, 0, 1)};
   for (const auto& dir : dirs) {
-    if (RayParityInsideDirection(tris, query, dir)) {
+    if (RayParityInsideDirectionAabb(tree, query, dir)) {
       ++inside_votes;
     }
   }
@@ -90,18 +130,19 @@ CgalTriangleSurface CgalTriangleSurface::from_soup(const TriangleSoup& soup) {
   }
   CgalTriangleSurface mesh;
   BuildTrianglesFromSoup(soup, &mesh.bbox_, &mesh.cgal_triangles_);
+  // Build the AABB tree over the non-degenerate triangles; degenerate ones are
+  // tested separately in intersects_box (CGAL AABB requires non-degenerate
+  // primitives).
+  BuildAabbAndDegenerate(mesh.cgal_triangles_, &mesh.aabb_tree_,
+                         &mesh.degenerate_triangles_);
   return mesh;
 }
 
 bool CgalTriangleSurface::intersects_box(const BoundingBox& box) const {
   const voxelization::CgalBbox query(box.x_min, box.y_min, box.z_min, box.x_max,
                                     box.y_max, box.z_max);
-  for (const auto& tri : cgal_triangles_) {
-    if (CGAL::do_intersect(tri, query)) {
-      return true;
-    }
-  }
-  return false;
+  return aabb_tree_.do_intersect(query) ||
+         DegenerateIntersectsBox(degenerate_triangles_, query);
 }
 
 CgalSurfaceMesh CgalSurfaceMesh::from_soup(const TriangleSoup& soup) {
@@ -135,6 +176,10 @@ CgalSurfaceMesh CgalSurfaceMesh::from_soup(const TriangleSoup& soup) {
       mesh.side_.emplace(mesh.polyhedron_);
     }
   }
+  // Build the AABB tree over the non-degenerate triangles (degenerate handled
+  // separately in intersects_box; CGAL AABB requires non-degenerate primitives).
+  BuildAabbAndDegenerate(mesh.cgal_triangles_, &mesh.aabb_tree_,
+                         &mesh.degenerate_triangles_);
   return mesh;
 }
 
@@ -144,7 +189,9 @@ bool CgalSurfaceMesh::is_closed() const {
 
 bool CgalSurfaceMesh::is_inside(scalar x, scalar y, scalar z) const {
   const CgalPoint query(x, y, z);
-  const bool ray = RayParityInside(cgal_triangles_, query);
+  // AABB-accelerated ray parity (same hit count as the brute-force
+  // RayParityInside -- bbox-cull + exact do_intersect, degenerate skipped).
+  const bool ray = RayParityInsideAabb(aabb_tree_, query);
   if (side_) {
     const bool cgal = (*side_)(query) == CGAL::ON_BOUNDED_SIDE;
     return cgal == ray ? cgal : ray;
@@ -155,12 +202,8 @@ bool CgalSurfaceMesh::is_inside(scalar x, scalar y, scalar z) const {
 bool CgalSurfaceMesh::intersects_box(const BoundingBox& box) const {
   const voxelization::CgalBbox query(box.x_min, box.y_min, box.z_min, box.x_max,
                                     box.y_max, box.z_max);
-  for (const auto& tri : cgal_triangles_) {
-    if (CGAL::do_intersect(tri, query)) {
-      return true;
-    }
-  }
-  return false;
+  return aabb_tree_.do_intersect(query) ||
+         DegenerateIntersectsBox(degenerate_triangles_, query);
 }
 
 scalar CgalSurfaceMesh::outside_sample_fraction(int samples_per_axis) const {
