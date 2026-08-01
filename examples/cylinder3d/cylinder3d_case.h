@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <utility>
@@ -295,6 +296,22 @@ struct Cylinder3dCase {
     bc::StampTreeBoundaryCells(blocks, face_pairs.tree_boundary_faces(),
                                CylinderBcSpecs(cfg.u_inlet, cfg.ramp_end_t),
                                cfg.n, cfg.n, cfg.n);
+    // Diagnostic (T11 W3 AMR deadlock hunt): mark construct-done so the CI log
+    // distinguishes a construct-phase hang (collective Allreduce) from a
+    // step-loop hang (LevelCoupler/GhostSchedule exchange). Remove once green.
+    int dbg_rank = 0;
+    MPI_Comm_rank(comm, &dbg_rank);
+    if (dbg_rank == 0) {
+      std::fprintf(stderr,
+                   "[cyl] constructed mode=%d max_level=%d n=%d u_inlet=%g "
+                   "blocks=%lld faces=%zu cf=%zu edges=%zu\n",
+                   static_cast<int>(cfg.mode), cfg.max_level, cfg.n, cfg.u_inlet,
+                   static_cast<long long>(fam.forest.local_num_octants()),
+                   face_pairs.same_level_faces().size(),
+                   face_pairs.coarse_fine_faces().size(),
+                   face_pairs.cross_rank_edges().size());
+      std::fflush(stderr);
+    }
   }
 
   void advance_steps(int num_steps) {
