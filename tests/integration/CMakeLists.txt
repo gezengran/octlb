@@ -64,3 +64,36 @@ add_test(NAME test_cylinder3d_uniform
     --oversubscribe
     $<TARGET_FILE:test_cylinder3d_uniform>
 )
+
+add_executable(test_cylinder3d_amr
+  test_cylinder3d_amr.cpp
+  ${CMAKE_SOURCE_DIR}/tests/mpi_main.cpp
+)
+
+target_compile_features(test_cylinder3d_amr PRIVATE cxx_std_20)
+
+target_include_directories(test_cylinder3d_amr
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_compile_definitions(test_cylinder3d_amr
+  PRIVATE
+    OCTLB_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data"
+)
+
+target_link_libraries(test_cylinder3d_amr
+  PRIVATE
+    octlb_lbm
+    octlb_field_schedule
+    GTest::gtest
+    MPI::MPI_CXX
+)
+
+add_test(NAME test_cylinder3d_amr
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 4
+    --oversubscribe
+    $<TARGET_FILE:test_cylinder3d_amr>
+)

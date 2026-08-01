@@ -121,7 +121,8 @@ TEST(BcDispatcher, MixedKinds_PerCellDispatch) {
   spec.type = DomainBcType::kInterpolatedVelocity;
   const std::vector<DomainBcSpec> specs = {spec};
   boundary::CollideDirichletBoundaryCellAt<T, Descriptor, Lattice>(
-      vd_ref, vd_ix, vd_iy, vd_iz, kN, kN, kN, /*omega=*/1.0, specs, nullptr);
+      vd_ref, vd_ix, vd_iy, vd_iz, kN, kN, kN, /*omega=*/1.0, specs,
+      /*t=*/0.0, nullptr);
   std::vector<T> vd_expected(static_cast<std::size_t>(kQ));
   {
     auto c = vd_ref.get(vd_ix, vd_iy, vd_iz);

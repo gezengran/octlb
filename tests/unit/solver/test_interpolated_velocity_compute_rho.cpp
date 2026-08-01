@@ -131,7 +131,7 @@ TEST(InterpolatedVelocityComputeRho, FlatFace_StillUsesVelocityBoundaryRho) {
 
   T u_wall[3]{};
   boundary::detail::PrescribedBoundaryU(kIx, kIy, kIz, kN, kN, kN, specs,
-                                        u_wall);
+                                        /*t=*/0.0, u_wall);
   const T rho_expected = boundary::detail::VelocityBoundaryRhoFromPop<
       T, Descriptor>(direction, orientation, &cell[0], u_wall);
 

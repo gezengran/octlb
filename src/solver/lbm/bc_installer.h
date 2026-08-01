@@ -90,6 +90,9 @@ inline void StampFromMaterial(BlockCollection<InstallerLattice>& blocks,
 
 // Stamp the cells sitting on each domain-outer (tree-boundary) face with the
 // BcKind implied by that face's spec. Replaces MarkDomainBoundaryCellKinds.
+// Geometry-aware: a face cell already stamped kSolid (e.g. the solid exterior of
+// a cubic domain whose channel is a carved sub-region) is left alone -- the
+// spec only applies to fluid face cells (kBulk / kBouzidi), not to solid cells.
 inline void StampTreeBoundaryCells(BlockCollection<InstallerLattice>& blocks,
                                    const std::vector<TreeBoundaryFace>& faces,
                                    const std::vector<DomainBcSpec>& specs,
@@ -98,30 +101,37 @@ inline void StampTreeBoundaryCells(BlockCollection<InstallerLattice>& blocks,
     InstallerLattice& lat = blocks[face.octant_id];
     const BcKind kind = BcKindFromSpecType(
         FindInstallerSpec(specs, face.face_dir).type);
+    // Stamp the face slab with the spec kind, skipping cells the geometry
+    // already marked solid (cubic-domain carved-channel inlet/outlet faces).
+    auto stamp = [&](int ix, int iy, int iz) {
+      if (lat.bc_kind(ix, iy, iz) != BcKind::kSolid) {
+        lat.set_bc_kind(ix, iy, iz, kind);
+      }
+    };
     switch (face.face_dir) {
       case FaceDir::kXMin:
         for (int iy = 0; iy < ny; ++iy)
-          for (int iz = 0; iz < nz; ++iz) lat.set_bc_kind(0, iy, iz, kind);
+          for (int iz = 0; iz < nz; ++iz) stamp(0, iy, iz);
         break;
       case FaceDir::kXMax:
         for (int iy = 0; iy < ny; ++iy)
-          for (int iz = 0; iz < nz; ++iz) lat.set_bc_kind(nx - 1, iy, iz, kind);
+          for (int iz = 0; iz < nz; ++iz) stamp(nx - 1, iy, iz);
         break;
       case FaceDir::kYMin:
         for (int ix = 0; ix < nx; ++ix)
-          for (int iz = 0; iz < nz; ++iz) lat.set_bc_kind(ix, 0, iz, kind);
+          for (int iz = 0; iz < nz; ++iz) stamp(ix, 0, iz);
         break;
       case FaceDir::kYMax:
         for (int ix = 0; ix < nx; ++ix)
-          for (int iz = 0; iz < nz; ++iz) lat.set_bc_kind(ix, ny - 1, iz, kind);
+          for (int iz = 0; iz < nz; ++iz) stamp(ix, ny - 1, iz);
         break;
       case FaceDir::kZMin:
         for (int ix = 0; ix < nx; ++ix)
-          for (int iy = 0; iy < ny; ++iy) lat.set_bc_kind(ix, iy, 0, kind);
+          for (int iy = 0; iy < ny; ++iy) stamp(ix, iy, 0);
         break;
       case FaceDir::kZMax:
         for (int ix = 0; ix < nx; ++ix)
-          for (int iy = 0; iy < ny; ++iy) lat.set_bc_kind(ix, iy, nz - 1, kind);
+          for (int iy = 0; iy < ny; ++iy) stamp(ix, iy, nz - 1);
         break;
     }
   }

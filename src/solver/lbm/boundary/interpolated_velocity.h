@@ -68,11 +68,13 @@ inline bool IsInteriorTopLidCell(int ix, int iy, int iz, int nx, int ny,
 
 inline void PrescribedBoundaryU(int ix, int iy, int iz, int nx, int ny, int nz,
                                 const std::vector<DomainBcSpec>& specs,
-                                double u[3]) {
+                                double t, double u[3]) {
   u[0] = u[1] = u[2] = 0.0;
   // A velocity-Dirichlet face with an inlet_field prescribes u per cell (e.g.
   // cylinder3d's uniform/ Poiseuille inlet). Pick the field on any face the
   // cell touches (flat inlet cell -> its face; inlet/wall corner -> the inlet).
+  // t is the current simulation time threaded from DomainBoundaryHandler so
+  // the inlet_field's ramp (PolynomialStartScale) is honoured on the FD path.
   const struct {
     bool on;
     FaceDir dir;
@@ -87,7 +89,7 @@ inline void PrescribedBoundaryU(int ix, int iy, int iz, int nx, int ny, int nz,
     const DomainBcSpec spec = FindSpec(specs, f.dir);
     if (spec.inlet_field) {
       double u_d[3]{};
-      spec.inlet_field->velocity(ix, iy, iz, 0.0, u_d);
+      spec.inlet_field->velocity(ix, iy, iz, t, u_d);
       for (int d = 0; d < 3; ++d) u[d] = u_d[d];
       return;
     }
@@ -200,13 +202,14 @@ template <typename T, typename DESCRIPTOR, typename Lattice>
 class BoundaryLatticeView {
  public:
   BoundaryLatticeView(Lattice& lat, int nx, int ny, int nz,
-                      const std::vector<DomainBcSpec>& specs)
+                      const std::vector<DomainBcSpec>& specs, double t = 0.0)
       : lat_(lat),
         nx_(nx),
         ny_(ny),
         nz_(nz),
         h_(lat.halo_width()),
-        specs_(specs) {}
+        specs_(specs),
+        t_(t) {}
 
   bool InDomain(int ix, int iy, int iz) const {
     return ix >= 0 && ix < nx_ && iy >= 0 && iy < ny_ && iz >= 0 && iz < nz_;
@@ -327,7 +330,7 @@ class BoundaryLatticeView {
 
   void PrescribedU(int ix, int iy, int iz, T u[DESCRIPTOR::d]) const {
     double u_d[3]{};
-    PrescribedBoundaryU(ix, iy, iz, nx_, ny_, nz_, specs_, u_d);
+    PrescribedBoundaryU(ix, iy, iz, nx_, ny_, nz_, specs_, t_, u_d);
     for (int d = 0; d < DESCRIPTOR::d; ++d) {
       u[d] = static_cast<T>(u_d[d]);
     }
@@ -424,6 +427,7 @@ class BoundaryLatticeView {
   int nz_;
   int h_;
   const std::vector<DomainBcSpec>& specs_;
+  double t_;
 };
 
 template <typename T, typename DESCRIPTOR>
@@ -798,9 +802,10 @@ inline void MarkDomainBoundaryBcKinds(
 template <typename T, typename DESCRIPTOR, typename Lattice>
 inline T BoundaryCellStatisticRho(Lattice& lat, int ix, int iy, int iz, int nx,
                                   int ny, int nz,
-                                  const std::vector<DomainBcSpec>& specs) {
+                                  const std::vector<DomainBcSpec>& specs,
+                                  double t = 0.0) {
   double u_wall_d[3]{};
-  detail::PrescribedBoundaryU(ix, iy, iz, nx, ny, nz, specs, u_wall_d);
+  detail::PrescribedBoundaryU(ix, iy, iz, nx, ny, nz, specs, t, u_wall_d);
   T u[DESCRIPTOR::d]{};
   for (int d = 0; d < DESCRIPTOR::d; ++d) {
     u[d] = static_cast<T>(u_wall_d[d]);
@@ -839,19 +844,20 @@ template <typename T, typename DESCRIPTOR, typename Lattice>
 inline void CollideDirichletBoundaryCellAt(Lattice& lat, int ix, int iy, int iz,
                                            int nx, int ny, int nz, T omega,
                                            const std::vector<DomainBcSpec>& specs,
+                                           double t = 0.0,
                                            CollideRhoStats* rho_stats = nullptr) {
   if (lat.bc_kind(ix, iy, iz) != BcKind::kVelocityDirichlet) {
     return;
   }
   double u_wall_d[3]{};
-  detail::PrescribedBoundaryU(ix, iy, iz, nx, ny, nz, specs, u_wall_d);
+  detail::PrescribedBoundaryU(ix, iy, iz, nx, ny, nz, specs, t, u_wall_d);
   T u[DESCRIPTOR::d]{};
   for (int d = 0; d < DESCRIPTOR::d; ++d) {
     u[d] = static_cast<T>(u_wall_d[d]);
   }
 
   T rho = BoundaryCellStatisticRho<T, DESCRIPTOR, Lattice>(
-      lat, ix, iy, iz, nx, ny, nz, specs);
+      lat, ix, iy, iz, nx, ny, nz, specs, t);
   auto cell = lat.get(ix, iy, iz);
   olb::lbm<DESCRIPTOR>::bgkCollision(cell, rho, u, omega);
 
@@ -864,6 +870,7 @@ template <typename T, typename DESCRIPTOR, typename Lattice>
 inline void CollideDirichletBoundaryCells(Lattice& lat, int nx, int ny, int nz,
                                           T omega,
                                           const std::vector<DomainBcSpec>& specs,
+                                          double t = 0.0,
                                           CollideRhoStats* rho_stats = nullptr,
                                           T /*average_rho*/ = T{1},
                                           bool /*use_const_rho_bgk*/ = false) {
@@ -871,7 +878,7 @@ inline void CollideDirichletBoundaryCells(Lattice& lat, int nx, int ny, int nz,
     for (int iy = 0; iy < ny; ++iy) {
       for (int iz = 0; iz < nz; ++iz) {
         CollideDirichletBoundaryCellAt<T, DESCRIPTOR, Lattice>(
-            lat, ix, iy, iz, nx, ny, nz, omega, specs, rho_stats);
+            lat, ix, iy, iz, nx, ny, nz, omega, specs, t, rho_stats);
       }
     }
   }
@@ -927,11 +934,11 @@ inline void FillOverlapPaddingForMode(Lattice& lat, int nx, int ny, int nz,
 template <typename T, typename DESCRIPTOR, typename Lattice>
 inline void ApplyInterpolatedVelocityBoundaryCells(
     Lattice& lat, int nx, int ny, int nz, T omega,
-    const std::vector<DomainBcSpec>& specs,
+    const std::vector<DomainBcSpec>& specs, double t = 0.0,
     OverlapPaddingMode padding_mode = OverlapPaddingMode::kHybrid) {
   FillOverlapPaddingForMode(lat, nx, ny, nz, padding_mode);
   detail::BoundaryLatticeView<T, DESCRIPTOR, Lattice> view(lat, nx, ny, nz,
-                                                           specs);
+                                                           specs, t);
 
   for (int ix = 0; ix < nx; ++ix) {
     for (int iy = 0; iy < ny; ++iy) {

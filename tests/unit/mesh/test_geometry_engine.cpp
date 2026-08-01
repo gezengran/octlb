@@ -192,6 +192,37 @@ TEST(GeometryEngineTest, S7_IllegalInternalChannel_SolidBoxFails) {
                GeometryBuildError);
 }
 
+// W3-d (T11) option A: a kInternalChannel whose OUTER surface is the cubic
+// domain itself and whose INNER cavity is the channel duct carves the channel
+// as fluid and the cube-minus-channel region as solid (in_wall) -- so an
+// anisotropic channel fits inside a cubic domain with isotropic cells. The
+// cube-minus-channel point must be kSolid (not kFluid, which the "else" branch
+// would give if the outer were smaller than the domain).
+TEST(GeometryEngineTest, InternalChannel_CubicOuter_CarvesChannelSolidExterior) {
+  MPI_Comm comm = MPI_COMM_WORLD;
+  OctreeForest forest(comm, UnitCubeDomain());
+  GeometryAssembly assembly;
+  GeometryPart part;
+  part.name = "channel";
+  part.role = GeometryPartRole::kInternalChannel;
+  part.priority = 0;
+  // outer = the whole domain cube [0,1]^3; inner = the channel [0.3,0.7]^3.
+  test_geom::FillHollowChannelPart(&part, /*outer_min=*/0.0, /*outer_max=*/1.0,
+                                   /*inner_min=*/0.3, /*inner_max=*/0.7);
+  assembly.parts.push_back(part);
+
+  GeometryConfig cfg = test_geom::DefaultConfig();
+  GeometryEngine engine;
+  const MaterialField field = engine.build(forest, assembly, cfg);
+
+  // Lumen (inside the inner cavity) is fluid.
+  EXPECT_EQ(MaterialAtPoint(forest, field, 0.5, 0.5, 0.5), MaterialKind::kFluid);
+  // Cube-minus-channel (between inner and outer = the wall) is solid.
+  EXPECT_EQ(MaterialAtPoint(forest, field, 0.1, 0.5, 0.5), MaterialKind::kSolid)
+      << "cube-minus-channel region must be solid (in_wall)";
+  EXPECT_TRUE(FieldContainsKind(field, MaterialKind::kBoundary));
+}
+
 TEST(GeometryEngineTest, Build_ThenFacePairList_NonEmpty) {
   MPI_Comm comm = MPI_COMM_WORLD;
   OctreeForest forest(comm, UnitCubeDomain());

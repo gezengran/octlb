@@ -58,6 +58,16 @@ add_test(NAME test_face_pair_list_symmetry_mpi2
     --gtest_filter=FacePairList.CrossRankTagsAgreeBetweenRanks
 )
 
+# ② W3 Stage B: 2-rank cross-rank edge enumeration + symmetric comm_tag.
+add_test(NAME test_face_pair_list_edges_mpi2
+  COMMAND
+    ${MPIEXEC_EXECUTABLE}
+    ${MPIEXEC_NUMPROC_FLAG} 2
+    --oversubscribe
+    $<TARGET_FILE:test_face_pair_list>
+    --gtest_filter=FacePairList.CrossRankEdges_EnumeratedSymmetric
+)
+
 add_executable(test_stl_reader test_stl_reader.cpp)
 target_compile_features(test_stl_reader PRIVATE cxx_std_17)
 target_compile_definitions(test_stl_reader PRIVATE

@@ -207,7 +207,7 @@ struct Cavity3dCase {
       double u_wall[3] = {};
       boundary::detail::PrescribedBoundaryU(ix, iy, iz, n_lat, n_lat, n_lat,
                                             CavityBoundarySpecs(converter),
-                                            u_wall);
+                                            /*t=*/0.0, u_wall);
       return u_wall[0];
     }
     double rho = 0.0;

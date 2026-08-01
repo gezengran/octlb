@@ -34,6 +34,13 @@ class OctreeForest {
   label local_num_octants() const;
   BoundingBox quadrant_bounds(OctantId id) const;
   int quadrant_level(OctantId id) const;
+  // Rebuild the face-connected ghost layer from the current (refined/balanced)
+  // forest WITHOUT repartitioning. Call after any refine/balance that runs
+  // after the last partition (e.g. GeometryEngine::build's later resolve_surface
+  // iterations) so FacePairList sees remote octants at their current level -- a
+  // stale ghost makes one rank enumerate a same-level face where the peer (own
+  // the refined children) enumerates coarse-fine, deadlocking GhostSchedule.
+  void RebuildGhost();
 
  private:
   struct Impl;

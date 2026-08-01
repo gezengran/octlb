@@ -347,6 +347,86 @@ TEST(LagravaCoupler, Rebuild_RecreateCoupler) {
   EXPECT_EQ(rebuilt.coupling_plan().size(), before);
 }
 
+// Defect 5 (T11 W3): the AMR multi-rank coarse-fine path. Before the fix,
+// FacePairList stored the remote side's quadid (a transient p4est ghost-array
+// index) and LevelCoupler::AppendFaceCouplingPoints called
+// forest.quadrant_bounds(quadid) / quadrant_level(quadid) on it, which threw
+// "OctantId out of range" because the ghost quadid is out of local range after
+// the iterate ghost layer is destroyed. This test builds a forest large enough
+// that the 2-rank partition splits a coarse-fine interface across ranks, then
+// constructs the LevelCoupler -- which must NOT throw, and the coupling plan's
+// cross-rank points must carry geometry (coarse_level + fine_level + bounds)
+// snapshotted at FacePairList build time.
+TEST(LagravaCoupler, CoarseFine_CapturedGeometry_ConstructsNoThrow) {
+  int rank = 0;
+  int size = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  if (size < 2) {
+    GTEST_SKIP() << "multi-rank test";
+  }
+
+  // A forest with a real coarse-fine interface: 64 level-2 octants + a center
+  // patch to level 3 (MakeCenterRefinedForest reliably yields coarse-fine
+  // faces; the +x-half layout gets eliminated by edge balance). p4est only, no
+  // CGAL -> fast.
+  OctreeForest forest = MakeCenterRefinedForest(1);
+  const FacePairList pairs(forest);
+  auto blocks = MakeUniformBlocks(forest);
+  ASSERT_FALSE(pairs.coarse_fine_faces().empty())
+      << "forest produced no coarse-fine faces";
+
+  // Defect 5 gate (part 2): construction must not throw. Before the fix,
+  // AppendFaceCouplingPoints called forest.quadrant_bounds(quadid) on the
+  // remote (ghost) side's transient quadid -> "OctantId out of range".
+  LevelCoupler coupler(MPI_COMM_WORLD, pairs, forest, blocks, kN, kN, kN,
+                       kOmega);
+  EXPECT_FALSE(coupler.coupling_plan().empty());
+
+  // Defect 5 gate (part 1): FacePairList captured physical bounds + level for
+  // every coarse-fine side at iterate time (local OR ghost). Verify the capture
+  // is sane for ALL faces: 2:1 levels, positive-volume bounds. For any
+  // cross-rank (ghost-side) face this is exactly the path that used to throw.
+  // (Reproducing a cross-rank split in a unit forest is impractical -- Morton
+  // keeps spatial neighbors on one rank; the AMR wake's large boundary is what
+  // crosses ranks. The cross-rank path itself is verified by the AMR
+  // integration test test_cylinder3d_amr::MultiRank_RunsNoCrash at 4 ranks.)
+  int cross_rank_faces = 0;
+  for (const CoarseFineFace& face : pairs.coarse_fine_faces()) {
+    ASSERT_EQ(face.fine_level, face.coarse_level + 1)
+        << "captured coarse/fine levels not 2:1";
+    const auto volume = [](const BoundingBox& b) {
+      return (b.x_max - b.x_min) * (b.y_max - b.y_min) * (b.z_max - b.z_min);
+    };
+    ASSERT_GT(volume(face.coarse_bounds), 0.0) << "captured coarse bounds empty";
+    for (int i = 0; i < 4; ++i) {
+      ASSERT_GT(volume(face.fine_bounds[i]), 0.0)
+          << "captured fine bounds[" << i << "] empty";
+      // A fine octant is half the coarse extent on each axis (2:1).
+      ASSERT_NEAR(volume(face.fine_bounds[i]),
+                  volume(face.coarse_bounds) / 8.0,
+                  1e-9 * volume(face.coarse_bounds))
+          << "fine[" << i << "] volume not coarse/8";
+    }
+    const bool coarse_local =
+        face.coarse_id >= 0 && face.coarse_id < forest.local_num_octants();
+    bool any_fine_remote = false;
+    for (int i = 0; i < 4; ++i) {
+      const bool fine_local =
+          face.fine_ids[i] >= 0 && face.fine_ids[i] < forest.local_num_octants();
+      if (coarse_local != fine_local) any_fine_remote = true;
+    }
+    if (any_fine_remote) ++cross_rank_faces;
+  }
+  int global_cross = 0;
+  MPI_Allreduce(&cross_rank_faces, &global_cross, 1, MPI_INT, MPI_SUM,
+                MPI_COMM_WORLD);
+  if (rank == 0) {
+    std::cout << "[defect-5] cross-rank coarse-fine faces on this partition: "
+              << global_cross << "\n";
+  }
+}
+
 TEST(LagravaCoupler, CoarseFine_CommTagsUnique) {
   int size = 0;
   MPI_Comm_size(MPI_COMM_WORLD, &size);

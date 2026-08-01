@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -65,14 +67,13 @@ struct CouplingKeyHash {
   }
 };
 
-void AppendFaceCouplingPoints(const CoarseFineFace& face,
-                              const OctreeForest& forest, int nx, int ny,
+void AppendFaceCouplingPoints(const CoarseFineFace& face, int nx, int ny,
                               int nz, std::vector<CouplingPoint>* out) {
   if ((nx % 2) != 0 || (ny % 2) != 0 || (nz % 2) != 0) {
     throw std::runtime_error("LevelCoupler: block dimensions must be even");
   }
 
-  const BoundingBox coarse_bounds = forest.quadrant_bounds(face.coarse_id);
+  const BoundingBox coarse_bounds = face.coarse_bounds;
   const scalar coarse_center[3] = {
       0.5 * (coarse_bounds.x_min + coarse_bounds.x_max),
       0.5 * (coarse_bounds.y_min + coarse_bounds.y_max),
@@ -84,7 +85,10 @@ void AppendFaceCouplingPoints(const CoarseFineFace& face,
 
   scalar fine_centers[4][3];
   for (int i = 0; i < 4; ++i) {
-    const BoundingBox fb = forest.quadrant_bounds(face.fine_ids[i]);
+    // Defect 5: use the geometry snapshotted by FacePairList at iterate time,
+    // not forest.quadrant_bounds(fine_ids[i]) -- the remote fine side's quadid
+    // is a transient ghost-array index, invalid after FacePairList construction.
+    const BoundingBox fb = face.fine_bounds[i];
     fine_centers[i][0] = 0.5 * (fb.x_min + fb.x_max);
     fine_centers[i][1] = 0.5 * (fb.y_min + fb.y_max);
     fine_centers[i][2] = 0.5 * (fb.z_min + fb.z_max);
@@ -122,8 +126,8 @@ void AppendFaceCouplingPoints(const CoarseFineFace& face,
         pt.fj = fine_idx[1];
         pt.fk = fine_idx[2];
         pt.normal = face.normal;
-        pt.coarse_level = forest.quadrant_level(face.coarse_id);
-        pt.fine_level = forest.quadrant_level(face.fine_ids[slot]);
+        pt.coarse_level = face.coarse_level;
+        pt.fine_level = face.fine_level;
         pt.fine_slot = slot;
         pt.comm_tag = face.comm_tags[slot];
         pt.remote_rank = face.remote_ranks[slot];
@@ -135,12 +139,11 @@ void AppendFaceCouplingPoints(const CoarseFineFace& face,
 }
 
 std::vector<CouplingPoint> BuildCouplingPlan(const FacePairList& faces,
-                                            const OctreeForest& forest,
                                             int nx, int ny, int nz) {
   std::vector<CouplingPoint> plan;
   FaceIterator it(faces);
   for (const CoarseFineFace& face : it) {
-    AppendFaceCouplingPoints(face, forest, nx, ny, nz, &plan);
+    AppendFaceCouplingPoints(face, nx, ny, nz, &plan);
   }
   return plan;
 }
@@ -220,7 +223,7 @@ LevelCoupler::LevelCoupler(MPI_Comm comm, const FacePairList& faces,
       num_local_octants_(forest.local_num_octants()) {
   MPI_Comm_rank(comm_, &my_rank_);
 
-  plan_ = BuildCouplingPlan(faces, forest, nx, ny, nz);
+  plan_ = BuildCouplingPlan(faces, nx, ny, nz);
   prev_macro_.resize(plan_.size());
   curr_macro_.resize(plan_.size());
   recv_macro_.resize(plan_.size());
@@ -332,6 +335,27 @@ void LevelCoupler::ExchangeCoarseMacros(int coarse_level, bool include_prev) {
   std::vector<MPI_Request> requests;
   requests.reserve(mpi_batches_.size() * 2);
 
+  const bool dbg = std::getenv("OCTLB_COUPLE_DEBUG") != nullptr;
+  if (dbg) {
+    std::fprintf(stderr,
+                 "[couple r%d] ExchangeCoarseMacros L=%d prev=%d batches=%zu\n",
+                 my_rank_, coarse_level, include_prev ? 1 : 0,
+                 mpi_batches_.size());
+    for (std::size_t b = 0; b < mpi_batches_.size(); ++b) {
+      const MpiBatch& batch = mpi_batches_[b];
+      int c = 0;
+      for (std::size_t pi : batch.plan_indices) {
+        if (plan_[pi].coarse_level == coarse_level) ++c;
+      }
+      std::fprintf(stderr,
+                   "[couple r%d]   batch[%zu] peer=%d tag=%d sends=%d "
+                   "plan_idx=%zu count@L=%d\n",
+                   my_rank_, b, batch.peer_rank, batch.comm_tag,
+                   batch.coarse_sends ? 1 : 0, batch.plan_indices.size(), c);
+    }
+    std::fflush(stderr);
+  }
+
   for (std::size_t b = 0; b < mpi_batches_.size(); ++b) {
     const MpiBatch& batch = mpi_batches_[b];
     double* base = &send_buf_[b * stride];
@@ -363,6 +387,12 @@ void LevelCoupler::ExchangeCoarseMacros(int coarse_level, bool include_prev) {
                 batch.peer_rank, batch.comm_tag, comm_, &req);
       requests.push_back(req);
     }
+  }
+
+  if (dbg) {
+    std::fprintf(stderr, "[couple r%d] Waitall %zu requests\n", my_rank_,
+                 requests.size());
+    std::fflush(stderr);
   }
 
   if (!requests.empty()) {
