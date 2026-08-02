@@ -33,7 +33,8 @@ TEST(CommTagAssigner, TagsAreOrderIndependentAcrossInsertionOrder) {
   assigner_b.assign();
 
   for (uint64_t key : order_a) {
-    EXPECT_EQ(assigner_a.tag_for(key), assigner_b.tag_for(key))
+    EXPECT_EQ(assigner_a.tag_for(key, /*peer_rank=*/1),
+              assigner_b.tag_for(key, /*peer_rank=*/1))
         << "tag for face " << key << " differs across insertion order";
   }
 }
@@ -48,13 +49,14 @@ TEST(CommTagAssigner, TagsAreUniqueWithinAPeer) {
   }
   assigner.assign();
 
-  std::unordered_map<uint64_t, int> seen;
+  std::unordered_map<int, uint64_t> tag_owner;
   for (uint64_t key : faces) {
-    const int tag = assigner.tag_for(key);
+    const int tag = assigner.tag_for(key, /*peer_rank=*/2);
     EXPECT_GT(tag, 0);
-    EXPECT_TRUE(seen.find(tag) == seen.end() || seen[tag] == static_cast<int>(key))
+    const auto it = tag_owner.find(tag);
+    EXPECT_TRUE(it == tag_owner.end() || it->second == key)
         << "tag " << tag << " reused for distinct faces in same peer";
-    seen[tag] = static_cast<int>(key);
+    tag_owner[tag] = key;
   }
 }
 
@@ -68,7 +70,7 @@ TEST(CommTagAssigner, TagsStayWithinTagUb) {
   assigner.assign();
 
   for (uint64_t key = 1; key <= 100; ++key) {
-    const int tag = assigner.tag_for(key * 7919ULL);
+    const int tag = assigner.tag_for(key * 7919ULL, /*peer_rank=*/3);
     EXPECT_GE(tag, 1);
     EXPECT_LE(tag, small_ub);
   }
@@ -98,9 +100,29 @@ TEST(CommTagAssigner, PeerTagsAreIndependentOfOtherPeers) {
   b_and_c.assign();
 
   for (uint64_t key : peer_b_faces) {
-    EXPECT_EQ(only_b.tag_for(key), b_and_c.tag_for(key))
+    EXPECT_EQ(only_b.tag_for(key, /*peer_rank=*/1),
+              b_and_c.tag_for(key, /*peer_rank=*/1))
         << "peer-B tag changed by presence of peer-C faces (old global-tag bug)";
   }
+}
+
+// Regression: the same uint64 key under two peers (hash collision, or a
+// same-rank "self" bucket colliding with a cross-rank face) must keep
+// independent per-peer tags. A flat key→tag map overwrites and desynchronizes
+// GhostSchedule face Waitall across the rank-pair (cylinder3d AMR hang).
+TEST(CommTagAssigner, SameKeyUnderTwoPeersKeepsIndependentTags) {
+  constexpr uint64_t kShared = 4286180941653651009ULL;
+  CommTagAssigner assigner(kTagUb);
+  // Peer 3: shared key sorts to index 2 → tag 3 (with two smaller keys).
+  assigner.add_face(412347995506250705ULL, /*peer_rank=*/3);
+  assigner.add_face(3281948207910144494ULL, /*peer_rank=*/3);
+  assigner.add_face(kShared, /*peer_rank=*/3);
+  // Peer 2 (self): shared key alone → tag 1. Flat map would overwrite peer-3.
+  assigner.add_face(kShared, /*peer_rank=*/2);
+  assigner.assign();
+
+  EXPECT_EQ(assigner.tag_for(kShared, /*peer_rank=*/3), 3);
+  EXPECT_EQ(assigner.tag_for(kShared, /*peer_rank=*/2), 1);
 }
 
 }  // namespace

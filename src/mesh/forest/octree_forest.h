@@ -42,6 +42,10 @@ class OctreeForest {
   // the refined children) enumerates coarse-fine, deadlocking GhostSchedule.
   void RebuildGhost();
 
+  /** The MPI communicator this forest was created on (for collective reductions
+   *  that must be rank-symmetric, e.g. the TimeLoop's global max level). */
+  MPI_Comm comm() const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

@@ -171,6 +171,8 @@ void OctreeForest::RebuildGhostLayer(Impl* impl) {
 
 void OctreeForest::RebuildGhost() { RebuildGhostLayer(impl_.get()); }
 
+MPI_Comm OctreeForest::comm() const { return impl_->comm; }
+
 OctreeForest::OctreeForest(MPI_Comm comm, BoundingBox domain, int bricks_x,
                            int bricks_y, int bricks_z)
     : impl_(std::make_unique<Impl>()) {

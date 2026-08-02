@@ -120,6 +120,7 @@ class GhostSchedule {
 
   void exchange() {
     const bool dbg = std::getenv("OCTLB_GHOST_DEBUG") != nullptr;
+    const bool verbose = std::getenv("OCTLB_MPI_VERBOSE") != nullptr;
     int grank = 0;
     if (dbg) {
       MPI_Comm_rank(comm_, &grank);
@@ -127,14 +128,16 @@ class GhostSchedule {
                    "[ghost r%d] exchange: faces=%zu edges=%zu edge_en=%d\n",
                    grank, entries_.size(), edge_entries_.size(),
                    enable_edge_exchange_ ? 1 : 0);
-      // Dump cross-rank face (peer, tag) to find asymmetric enumeration.
-      for (std::size_t i = 0; i < entries_.size(); ++i) {
-        const Entry& e = entries_[i];
-        if (!e.is_local) {
-          std::fprintf(stderr, "[face r%d] peer=%d tag=%d dir=%d lid=%d\n",
-                       grank, e.remote_rank, e.comm_tag,
-                       static_cast<int>(e.dir),
-                       static_cast<int>(e.local_id));
+      if (verbose) {
+        // Dump cross-rank face (peer, tag) to find asymmetric enumeration.
+        for (std::size_t i = 0; i < entries_.size(); ++i) {
+          const Entry& e = entries_[i];
+          if (!e.is_local) {
+            std::fprintf(stderr, "[face r%d] peer=%d tag=%d dir=%d lid=%d\n",
+                         grank, e.remote_rank, e.comm_tag,
+                         static_cast<int>(e.dir),
+                         static_cast<int>(e.local_id));
+          }
         }
       }
       std::fflush(stderr);

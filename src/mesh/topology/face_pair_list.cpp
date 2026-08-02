@@ -24,6 +24,7 @@ namespace {
 // rank-pair, all faces are known and a symmetric sorted-index tag can be given.
 struct PendingTagFill {
   uint64_t face_key;
+  int peer_rank;  // MPI peer this key was registered under (for tag_for lookup)
   enum Kind { kSameLevel, kCoarseFine, kCrossRankEdge } kind;
   std::size_t record_index;  // index into same_level_ / coarse_fine_ / cross_rank_edges_
   int slot;                  // 0 for same-level; 0..3 for coarse-fine; 0 for edge
@@ -161,12 +162,15 @@ bool SideHasLocalQuadrant(const FaceBuildContext& ctx,
 }
 
 // Register a face (key, peer) for tag assignment and record where its tag must
-// be written back in phase two.
+// be written back in phase two. peer_rank may be my_rank for local same-level /
+// local coarse-fine records (tags still filled for API completeness); the
+// assigner keys by (peer, face_key) so a self-bucket entry cannot overwrite a
+// cross-rank tag for the same uint64 key.
 void RegisterFace(FaceBuildContext* ctx, uint64_t face_key, int peer_rank,
                   PendingTagFill::Kind kind, std::size_t record_index,
                   int slot) {
   ctx->tagger->add_face(face_key, peer_rank);
-  ctx->pending->push_back({face_key, kind, record_index, slot});
+  ctx->pending->push_back({face_key, peer_rank, kind, record_index, slot});
 }
 
 void FaceCallback(p8est_iter_face_info_t* info, void* user_data) {
@@ -525,7 +529,7 @@ void BuildFromForest(const OctreeForest& forest, FaceBuildContext* ctx,
 
   tagger.assign();
   for (const PendingTagFill& p : *pending) {
-    const int tag = tagger.tag_for(p.face_key);
+    const int tag = tagger.tag_for(p.face_key, p.peer_rank);
     if (p.kind == PendingTagFill::kSameLevel) {
       (*ctx->same_level)[p.record_index].comm_tag = tag;
     } else if (p.kind == PendingTagFill::kCoarseFine) {
@@ -533,6 +537,21 @@ void BuildFromForest(const OctreeForest& forest, FaceBuildContext* ctx,
     } else {  // kCrossRankEdge
       (*ctx->cross_rank_edges)[p.record_index].comm_tag = tag;
     }
+  }
+
+  // Diagnostic: dump every registered (kind, key, tag) after assign. Compare
+  // sorted key sets across a rank-pair to find pool asymmetry. OCTLB_FACE_DEBUG.
+  if (std::getenv("OCTLB_FACE_DEBUG") != nullptr) {
+    for (const PendingTagFill& p : *pending) {
+      const char* kind = p.kind == PendingTagFill::kSameLevel   ? "SL"
+                         : p.kind == PendingTagFill::kCoarseFine ? "CF"
+                                                                : "ED";
+      std::fprintf(stderr, "[tag r%d] %s peer=%d tag=%d key=%llu\n",
+                   ctx->my_rank, kind, p.peer_rank,
+                   tagger.tag_for(p.face_key, p.peer_rank),
+                   static_cast<unsigned long long>(p.face_key));
+    }
+    std::fflush(stderr);
   }
 
   ctx->forest = nullptr;

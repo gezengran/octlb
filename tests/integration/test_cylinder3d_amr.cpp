@@ -233,7 +233,9 @@ TEST(Cylinder3dAmr, CoarseFineInterface_Continuous) {
   double max_u_jump = 0.0;
   int checked = 0;
   for (const CouplingPoint& cp : cas.coupler.coupling_plan()) {
-    // Local coarse-fine pairs only: both ends on this rank.
+    // Local coarse-fine pairs only: both ends on this rank. Cross-rank CF is
+    // covered by MultiRank_RunsNoCrash (coupler exchange); continuity of the
+    // prolonged fine ghost vs remote coarse is not sampled here.
     if (cp.remote_rank != rank || cp.coarse_remote_rank != rank) continue;
     if (cp.coarse_id >= num_local || cp.fine_id >= num_local) continue;
     double rho_c = 0.0, rho_f = 0.0;
@@ -248,16 +250,26 @@ TEST(Cylinder3dAmr, CoarseFineInterface_Continuous) {
         std::max(max_u_jump, std::sqrt(du0 * du0 + du1 * du1 + du2 * du2));
     ++checked;
   }
-  ASSERT_GT(checked, 0) << "no local coarse-fine interface; AMR did not refine";
+  // AMR partition often puts every hanging face across ranks — one rank may
+  // own zero local-local CF pairs. Aggregate so the assertion is collective.
+  int checked_global = 0;
+  double jumps_in[2] = {max_rho_jump, max_u_jump};
+  double jumps_out[2] = {0.0, 0.0};
+  MPI_Allreduce(&checked, &checked_global, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(jumps_in, jumps_out, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+  ASSERT_GT(checked_global, 0)
+      << "no local coarse-fine interface on any rank; AMR did not refine";
+  max_rho_jump = jumps_out[0];
+  max_u_jump = jumps_out[1];
 
   const double rho_tol = StrictMode() ? 0.1 * cas.cfg.rho0 : 0.5 * cas.cfg.rho0;
   const double u_tol = StrictMode() ? 2.0 * u_scale : 10.0 * u_scale;
   EXPECT_LT(max_rho_jump / cas.cfg.rho0, rho_tol / cas.cfg.rho0)
-      << "coarse-fine rho discontinuity " << max_rho_jump << " over " << checked
-      << " interface points";
+      << "coarse-fine rho discontinuity " << max_rho_jump << " over "
+      << checked_global << " interface points";
   EXPECT_LT(max_u_jump, u_tol)
-      << "coarse-fine u discontinuity " << max_u_jump << " over " << checked
-      << " interface points";
+      << "coarse-fine u discontinuity " << max_u_jump << " over "
+      << checked_global << " interface points";
 }
 
 // W3 magnitude gate (T11): Schäfer-Turek AMR at W4 resolution (max_level=5,

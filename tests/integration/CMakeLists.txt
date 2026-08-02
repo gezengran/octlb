@@ -98,10 +98,8 @@ add_test(NAME test_cylinder3d_amr
     $<TARGET_FILE:test_cylinder3d_amr>
 )
 
-# Diagnostic (T11 W3 AMR deadlock hunt): fail fast (600s, not the 40-min job
-# timeout) and emit per-exchange debug so the CI log shows exactly which
-# LevelCoupler batch / GhostSchedule Waitall hangs. Remove once green.
+# Geometry+AMR construct is the bulk of wall time; 600s is enough on native x86
+# CI and fails faster than the job-level timeout if a hang regresses.
 set_tests_properties(test_cylinder3d_amr PROPERTIES
   TIMEOUT 600
-  ENVIRONMENT "OCTLB_COUPLE_DEBUG=1;OCTLB_GHOST_DEBUG=1"
 )
