@@ -34,7 +34,8 @@ struct BcDispatcher {
                              const std::vector<DomainBcSpec>& specs,
                              CollideRhoStats* rho_stats = nullptr,
                              double average_rho = 1.0,
-                             bool use_const_rho_bgk = false) {
+                             bool use_const_rho_bgk = false,
+                             double t = 0.0) {
     const BcKind kind = lat.bc_kind(ix, iy, iz);
     switch (kind) {
       case BcKind::kBulk: {
@@ -68,7 +69,7 @@ struct BcDispatcher {
       case BcKind::kVelocityDirichlet: {
         boundary::CollideDirichletBoundaryCellAt<double, Descriptor,
                                                   DomainBoundaryLattice>(
-            lat, ix, iy, iz, nx, ny, nz, omega, specs, rho_stats);
+            lat, ix, iy, iz, nx, ny, nz, omega, specs, t, rho_stats);
         return;
       }
       default:

@@ -6,6 +6,7 @@
 
 #include "block_lattice.h"
 #include "src/solver/io/vtk_writer/vtk_cell_field.h"
+#include "src/solver/lbm/unit_converter/unit_converter.h"
 
 namespace octlb {
 
@@ -94,7 +95,7 @@ class VtkPressureField {
     T rho{};
     T u[3]{};
     lattice_.get(i, j, k).computeRhoU(rho, u);
-    const T cs2 = T{1} / static_cast<T>(DESCRIPTOR::invCs2);
+    const T cs2 = T{1} / olb::descriptors::invCs2<T, DESCRIPTOR>();
     out[0] = static_cast<double>(rho * cs2);
     (void)u;
   }

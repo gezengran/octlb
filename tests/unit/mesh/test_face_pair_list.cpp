@@ -193,4 +193,64 @@ TEST(FacePairList, CrossRankTagsAgreeBetweenRanks) {
       << "cross-rank comm_tag multiset differs between ranks";
 }
 
+// ② W3 Stage B (T11): cross-rank edge-diagonal pairs are enumerated by the
+// p8est edge callback and given symmetric comm_tags (per-rank-pair canonical
+// edge key), so GhostSchedule Stage B can Isend/Irecv edge halos without tag
+// mismatch. Requires exactly 2 ranks; uniform refine to a single level keeps
+// the forest edge-balanced (= face-balanced, no 2:1) so the edge callback fires.
+TEST(FacePairList, CrossRankEdges_EnumeratedSymmetric) {
+  int rank = 0;
+  int size = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  if (size != 2) {
+    GTEST_SKIP() << "requires exactly 2 ranks";
+  }
+
+  OctreeForest forest(MPI_COMM_WORLD, UnitCubeDomain());
+  forest.refine([](OctantId) { return true; }, 2);  // 64 octants -> boundary
+  forest.balance();
+  forest.partition();
+
+  const FacePairList pairs(forest);
+
+  // Cross-rank edges exist (diagonal blocks across the partition boundary).
+  std::vector<int> tags;
+  for (const CrossRankEdge& e : pairs.cross_rank_edges()) {
+    EXPECT_NE(e.remote_rank, rank) << "cross_rank_edges must be cross-rank only";
+    EXPECT_GE(static_cast<int>(e.d1), 0);
+    EXPECT_LE(static_cast<int>(e.d1), 5);
+    EXPECT_GE(static_cast<int>(e.d2), 0);
+    EXPECT_LE(static_cast<int>(e.d2), 5);
+    EXPECT_NE(static_cast<int>(e.d1) / 2, static_cast<int>(e.d2) / 2)
+        << "edge faces must be on different axes";
+    tags.push_back(e.comm_tag);
+  }
+  ASSERT_FALSE(tags.empty())
+      << "no cross-rank edges; partition too coarse or edge callback did not fire";
+
+  // Per-peer uniqueness: no duplicate comm_tag on this rank.
+  std::sort(tags.begin(), tags.end());
+  for (std::size_t i = 1; i < tags.size(); ++i) {
+    ASSERT_NE(tags[i], tags[i - 1])
+        << "duplicate cross-rank edge comm_tag on rank " << rank;
+  }
+
+  // Symmetry: the peer rank assigns the same multiset of edge tags for the
+  // shared edges (canonical edge key is symmetric).
+  const int peer = 1 - rank;
+  int my_count = static_cast<int>(tags.size());
+  int peer_count = 0;
+  MPI_Sendrecv(&my_count, 1, MPI_INT, peer, 0, &peer_count, 1, MPI_INT, peer, 0,
+               MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+  ASSERT_EQ(my_count, peer_count)
+      << "cross-rank edge count differs between ranks";
+
+  std::vector<int> other(static_cast<std::size_t>(peer_count), 0);
+  MPI_Sendrecv(tags.data(), my_count, MPI_INT, peer, 1, other.data(),
+               peer_count, MPI_INT, peer, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+  std::sort(other.begin(), other.end());
+  EXPECT_EQ(tags, other) << "cross-rank edge comm_tag multiset differs between ranks";
+}
+
 }  // namespace octlb

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -65,14 +67,13 @@ struct CouplingKeyHash {
   }
 };
 
-void AppendFaceCouplingPoints(const CoarseFineFace& face,
-                              const OctreeForest& forest, int nx, int ny,
+void AppendFaceCouplingPoints(const CoarseFineFace& face, int nx, int ny,
                               int nz, std::vector<CouplingPoint>* out) {
   if ((nx % 2) != 0 || (ny % 2) != 0 || (nz % 2) != 0) {
     throw std::runtime_error("LevelCoupler: block dimensions must be even");
   }
 
-  const BoundingBox coarse_bounds = forest.quadrant_bounds(face.coarse_id);
+  const BoundingBox coarse_bounds = face.coarse_bounds;
   const scalar coarse_center[3] = {
       0.5 * (coarse_bounds.x_min + coarse_bounds.x_max),
       0.5 * (coarse_bounds.y_min + coarse_bounds.y_max),
@@ -84,7 +85,10 @@ void AppendFaceCouplingPoints(const CoarseFineFace& face,
 
   scalar fine_centers[4][3];
   for (int i = 0; i < 4; ++i) {
-    const BoundingBox fb = forest.quadrant_bounds(face.fine_ids[i]);
+    // Defect 5: use the geometry snapshotted by FacePairList at iterate time,
+    // not forest.quadrant_bounds(fine_ids[i]) -- the remote fine side's quadid
+    // is a transient ghost-array index, invalid after FacePairList construction.
+    const BoundingBox fb = face.fine_bounds[i];
     fine_centers[i][0] = 0.5 * (fb.x_min + fb.x_max);
     fine_centers[i][1] = 0.5 * (fb.y_min + fb.y_max);
     fine_centers[i][2] = 0.5 * (fb.z_min + fb.z_max);
@@ -122,8 +126,8 @@ void AppendFaceCouplingPoints(const CoarseFineFace& face,
         pt.fj = fine_idx[1];
         pt.fk = fine_idx[2];
         pt.normal = face.normal;
-        pt.coarse_level = forest.quadrant_level(face.coarse_id);
-        pt.fine_level = forest.quadrant_level(face.fine_ids[slot]);
+        pt.coarse_level = face.coarse_level;
+        pt.fine_level = face.fine_level;
         pt.fine_slot = slot;
         pt.comm_tag = face.comm_tags[slot];
         pt.remote_rank = face.remote_ranks[slot];
@@ -135,18 +139,23 @@ void AppendFaceCouplingPoints(const CoarseFineFace& face,
 }
 
 std::vector<CouplingPoint> BuildCouplingPlan(const FacePairList& faces,
-                                            const OctreeForest& forest,
                                             int nx, int ny, int nz) {
   std::vector<CouplingPoint> plan;
   FaceIterator it(faces);
   for (const CoarseFineFace& face : it) {
-    AppendFaceCouplingPoints(face, forest, nx, ny, nz, &plan);
+    AppendFaceCouplingPoints(face, nx, ny, nz, &plan);
   }
   return plan;
 }
 
-bool OwnsOctant(OctantId id, label num_local) {
-  return id >= 0 && id < num_local;
+// Ownership must NOT use "id < num_local": for a cross-rank coarse-fine face the
+// remote side's id is a p4est ghost-array index, which routinely falls in
+// [0, num_local) and would look "owned". Use the ranks FacePairList recorded.
+bool OwnsCoarse(const CouplingPoint& pt, int my_rank) {
+  return pt.coarse_remote_rank == my_rank;
+}
+bool OwnsFine(const CouplingPoint& pt, int my_rank) {
+  return pt.remote_rank == my_rank;
 }
 
 }  // namespace
@@ -220,7 +229,7 @@ LevelCoupler::LevelCoupler(MPI_Comm comm, const FacePairList& faces,
       num_local_octants_(forest.local_num_octants()) {
   MPI_Comm_rank(comm_, &my_rank_);
 
-  plan_ = BuildCouplingPlan(faces, forest, nx, ny, nz);
+  plan_ = BuildCouplingPlan(faces, nx, ny, nz);
   prev_macro_.resize(plan_.size());
   curr_macro_.resize(plan_.size());
   recv_macro_.resize(plan_.size());
@@ -240,7 +249,6 @@ LevelCoupler::LevelCoupler(MPI_Comm comm, const FacePairList& faces,
         std::max(level_end_[static_cast<std::size_t>(lvl)], i + 1);
   }
 
-  const label num_blocks = num_local_octants_;
   auto find_batch = [&](int peer, int tag, bool sends) -> MpiBatch* {
     for (MpiBatch& batch : mpi_batches_) {
       if (batch.peer_rank == peer && batch.comm_tag == tag &&
@@ -253,15 +261,15 @@ LevelCoupler::LevelCoupler(MPI_Comm comm, const FacePairList& faces,
 
   for (std::size_t i = 0; i < plan_.size(); ++i) {
     const CouplingPoint& pt = plan_[i];
-    if (OwnsOctant(pt.coarse_id, num_blocks)) {
+    const bool owns_coarse = OwnsCoarse(pt, my_rank_);
+    const bool owns_fine = OwnsFine(pt, my_rank_);
+
+    if (owns_coarse) {
       ReadMacro(blocks_[pt.coarse_id], pt.ci, pt.cj, pt.ck, &prev_macro_[i]);
       curr_macro_[i] = prev_macro_[i];
     }
 
-    const bool owns_coarse = OwnsOctant(pt.coarse_id, num_blocks);
-    const bool owns_fine = OwnsOctant(pt.fine_id, num_blocks);
-
-    if (owns_coarse && !owns_fine && pt.remote_rank != my_rank_) {
+    if (owns_coarse && !owns_fine) {
       MpiBatch* batch = find_batch(pt.remote_rank, pt.comm_tag, true);
       if (batch == nullptr) {
         mpi_batches_.push_back(
@@ -269,8 +277,7 @@ LevelCoupler::LevelCoupler(MPI_Comm comm, const FacePairList& faces,
         batch = &mpi_batches_.back();
       }
       batch->plan_indices.push_back(i);
-    } else if (owns_fine && !owns_coarse &&
-               pt.coarse_remote_rank != my_rank_) {
+    } else if (owns_fine && !owns_coarse) {
       MpiBatch* batch =
           find_batch(pt.coarse_remote_rank, pt.comm_tag, false);
       if (batch == nullptr) {
@@ -311,11 +318,10 @@ std::size_t LevelCoupler::LevelRangeEnd(int coarse_level) const {
 void LevelCoupler::ExchangeCoarseMacros(int coarse_level, bool include_prev) {
   const std::size_t begin = LevelRangeBegin(coarse_level);
   const std::size_t end = LevelRangeEnd(coarse_level);
-  const label num_blocks = num_local_octants_;
 
   for (std::size_t i = begin; i < end; ++i) {
     const CouplingPoint& pt = plan_[i];
-    if (OwnsOctant(pt.coarse_id, num_blocks)) {
+    if (OwnsCoarse(pt, my_rank_)) {
       ReadMacro(blocks_[pt.coarse_id], pt.ci, pt.cj, pt.ck, &curr_macro_[i]);
     }
   }
@@ -331,6 +337,30 @@ void LevelCoupler::ExchangeCoarseMacros(int coarse_level, bool include_prev) {
 
   std::vector<MPI_Request> requests;
   requests.reserve(mpi_batches_.size() * 2);
+
+  const bool dbg = std::getenv("OCTLB_COUPLE_DEBUG") != nullptr;
+  const bool verbose = std::getenv("OCTLB_MPI_VERBOSE") != nullptr;
+  if (dbg) {
+    std::fprintf(stderr,
+                 "[couple r%d] ExchangeCoarseMacros L=%d prev=%d batches=%zu\n",
+                 my_rank_, coarse_level, include_prev ? 1 : 0,
+                 mpi_batches_.size());
+    if (verbose) {
+      for (std::size_t b = 0; b < mpi_batches_.size(); ++b) {
+        const MpiBatch& batch = mpi_batches_[b];
+        int c = 0;
+        for (std::size_t pi : batch.plan_indices) {
+          if (plan_[pi].coarse_level == coarse_level) ++c;
+        }
+        std::fprintf(stderr,
+                     "[couple r%d]   batch[%zu] peer=%d tag=%d sends=%d "
+                     "plan_idx=%zu count@L=%d\n",
+                     my_rank_, b, batch.peer_rank, batch.comm_tag,
+                     batch.coarse_sends ? 1 : 0, batch.plan_indices.size(), c);
+      }
+    }
+    std::fflush(stderr);
+  }
 
   for (std::size_t b = 0; b < mpi_batches_.size(); ++b) {
     const MpiBatch& batch = mpi_batches_[b];
@@ -365,6 +395,12 @@ void LevelCoupler::ExchangeCoarseMacros(int coarse_level, bool include_prev) {
     }
   }
 
+  if (dbg) {
+    std::fprintf(stderr, "[couple r%d] Waitall %zu requests\n", my_rank_,
+                 requests.size());
+    std::fflush(stderr);
+  }
+
   if (!requests.empty()) {
     MPI_Waitall(static_cast<int>(requests.size()), requests.data(),
                 MPI_STATUSES_IGNORE);
@@ -394,16 +430,14 @@ void LevelCoupler::ExchangeCoarseMacros(int coarse_level, bool include_prev) {
 
 void LevelCoupler::ApplyProlongation(std::size_t begin, std::size_t end,
                                      bool half_time) {
-  const label num_blocks = num_local_octants_;
-
   for (std::size_t i = begin; i < end; ++i) {
     const CouplingPoint& pt = plan_[i];
-    if (!OwnsOctant(pt.fine_id, num_blocks)) {
+    if (!OwnsFine(pt, my_rank_)) {
       continue;
     }
 
     MacroState macro{};
-    const bool owns_coarse = OwnsOctant(pt.coarse_id, num_blocks);
+    const bool owns_coarse = OwnsCoarse(pt, my_rank_);
 
     if (owns_coarse) {
       ReadMacro(blocks_[pt.coarse_id], pt.ci, pt.cj, pt.ck, &macro);
@@ -449,15 +483,14 @@ void LevelCoupler::apply_full_time(int coarse_level) {
 }
 
 void LevelCoupler::restrict(int fine_level) {
-  const label num_blocks = num_local_octants_;
-
   for (std::size_t i = 0; i < plan_.size(); ++i) {
     const CouplingPoint& pt = plan_[i];
     if (pt.fine_level != fine_level) {
       continue;
     }
-    if (!OwnsOctant(pt.coarse_id, num_blocks) ||
-        !OwnsOctant(pt.fine_id, num_blocks)) {
+    // Restriction only when both sides are local (cross-rank restrict is a
+    // separate exchange path; ghost ids must not be treated as local).
+    if (!OwnsCoarse(pt, my_rank_) || !OwnsFine(pt, my_rank_)) {
       continue;
     }
 

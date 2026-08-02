@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <mpi.h>
 
+#include <limits>
 #include <set>
 #include <unordered_map>
 #include <vector>
@@ -44,19 +45,25 @@ struct DummyBlock {
     ghost_[static_cast<int>(dir)].assign(buf, buf + count);
   }
 
-  // ② edge-ghost (test double). No test inspects edge ghosts on DummyBlock, so
-  // unpack discards; pack emits a signature so the exchange path is exercised.
+  // ② edge-ghost (test double). pack emits a signature; unpack records into a
+  // (d1,d2)-keyed store so cross-rank edge exchange (Stage B) can be verified.
   static int edge_buffer_count(int nx, int ny, int nz, FaceDir d1, FaceDir d2) {
     return EdgeBufferCount(nx, ny, nz, d1, d2);
   }
   void pack_edge(FaceDir d1, FaceDir d2, int* buf, int count) const {
     for (int i = 0; i < count; ++i) {
-      buf[i] = id * 100000 + static_cast<int>(d1) * 1000 +
-               static_cast<int>(d2) * 10 + i;
+      buf[i] = EdgeSignature(d1, d2, i);
     }
   }
-  void unpack_edge(FaceDir /*d1*/, FaceDir /*d2*/, const int* /*buf*/,
-                   int /*count*/) {}
+  void unpack_edge(FaceDir d1, FaceDir d2, const int* buf, int count) {
+    edge_ghost_[EdgeKey(d1, d2)].assign(buf, buf + count);
+  }
+
+  const std::vector<int>& edge_ghost(FaceDir d1, FaceDir d2) const {
+    static const std::vector<int> empty;
+    const auto it = edge_ghost_.find(EdgeKey(d1, d2));
+    return it == edge_ghost_.end() ? empty : it->second;
+  }
 
   const std::vector<int>& ghost(FaceDir dir) const {
     return ghost_[static_cast<int>(dir)];
@@ -66,8 +73,17 @@ struct DummyBlock {
     return id * 1000 + static_cast<int>(dir) * 100 + index;
   }
 
+  int EdgeSignature(FaceDir d1, FaceDir d2, int index = 0) const {
+    return id * 100000 + static_cast<int>(d1) * 1000 +
+           static_cast<int>(d2) * 10 + index;
+  }
+
  private:
+  static int EdgeKey(FaceDir d1, FaceDir d2) {
+    return static_cast<int>(d1) * 8 + static_cast<int>(d2);
+  }
   std::array<std::vector<int>, 6> ghost_{};
+  std::unordered_map<int, std::vector<int>> edge_ghost_{};
 };
 
 OctreeForest MakeUniformForest(int max_level) {
@@ -454,6 +470,69 @@ TEST(GhostSchedule, TwoRank_BlockLattice_FaceValuesMatch) {
     }
   } else {
     MPI_Send(outbound.data(), n, MPI_DOUBLE, 0, 9200, MPI_COMM_WORLD);
+  }
+}
+
+// ② W3 Stage B: GhostSchedule fills cross-rank edge-diagonal ghosts via MPI.
+// Two ranks, uniform forest; the cross-rank edge with the smallest symmetric
+// comm_tag is the same physical edge on both ranks. After exchange(), the
+// local block's edge ghost at (Opp(d1), Opp(d2)) must equal the peer's
+// pack_edge(peer_d1, peer_d2) -- the peer's local edge faces are the opposites
+// of ours, so it packs (Opp(d1), Opp(d2)) and we unpack into (Opp(d1), Opp(d2)).
+TEST(GhostSchedule, EdgeExchange_CrossRank_FillsDiagonalGhost) {
+  int rank = 0;
+  int size = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  if (size != 2) {
+    GTEST_SKIP() << "requires exactly 2 ranks";
+  }
+
+  OctreeForest forest = MakeUniformForest(2);  // 64 octants -> partition boundary
+  const FacePairList pairs(forest);
+
+  const CrossRankEdge* e = nullptr;
+  int min_tag = std::numeric_limits<int>::max();
+  for (const CrossRankEdge& edge : pairs.cross_rank_edges()) {
+    if (edge.remote_rank != rank && edge.comm_tag < min_tag) {
+      min_tag = edge.comm_tag;
+      e = &edge;
+    }
+  }
+  ASSERT_NE(e, nullptr) << "no cross-rank edges; partition too coarse";
+
+  BlockCollection<DummyBlock> blocks(
+      forest.local_num_octants(), [rank](OctantId id) {
+        DummyBlock block;
+        block.id = rank * 1000 + static_cast<int>(id);
+        return block;
+      });
+
+  GhostSchedule<DummyBlock> schedule(MPI_COMM_WORLD, pairs, blocks, kNx, kNy,
+                                     kNz);
+  schedule.exchange();
+
+  const FaceDir od1 = OppositeFace(e->d1);
+  const FaceDir od2 = OppositeFace(e->d2);
+  const int count =
+      DummyBlock::edge_buffer_count(kNx, kNy, kNz, e->d1, e->d2);
+  const std::vector<int> got = blocks[e->local_id].edge_ghost(od1, od2);
+  ASSERT_EQ(got.size(), static_cast<std::size_t>(count))
+      << "cross-rank edge ghost not filled (Stage B no-op)";
+
+  // The peer packs its local edge (its faces are Opp(d1), Opp(d2)) and sends.
+  std::vector<int> peer_pack(static_cast<std::size_t>(count));
+  if (rank == 0) {
+    MPI_Recv(peer_pack.data(), count, MPI_INT, 1, 9300, MPI_COMM_WORLD,
+             MPI_STATUS_IGNORE);
+    for (int i = 0; i < count; ++i) {
+      EXPECT_EQ(got[static_cast<std::size_t>(i)],
+                peer_pack[static_cast<std::size_t>(i)])
+          << "cross-rank edge ghost mismatch at " << i;
+    }
+  } else {
+    blocks[e->local_id].pack_edge(e->d1, e->d2, peer_pack.data(), count);
+    MPI_Send(peer_pack.data(), count, MPI_INT, 0, 9300, MPI_COMM_WORLD);
   }
 }
 

@@ -169,6 +169,10 @@ void OctreeForest::RebuildGhostLayer(Impl* impl) {
   }
 }
 
+void OctreeForest::RebuildGhost() { RebuildGhostLayer(impl_.get()); }
+
+MPI_Comm OctreeForest::comm() const { return impl_->comm; }
+
 OctreeForest::OctreeForest(MPI_Comm comm, BoundingBox domain, int bricks_x,
                            int bricks_y, int bricks_z)
     : impl_(std::make_unique<Impl>()) {
@@ -214,6 +218,12 @@ void OctreeForest::refine(std::function<bool(OctantId)> criterion,
 }
 
 void OctreeForest::balance() {
+  // Face balance. (Edge balance -- P8EST_CONNECT_EDGE -- was tried for the ②
+  // Stage B edge callback, but it breaks multi-rank AMR face-pair symmetry:
+  // the face-connected ghost then enumerates cross-rank faces asymmetrically
+  // across ranks -> MPI deadlock in GhostSchedule::exchange. The edge callback
+  // does NOT need forest-level edge balance -- FacePairList builds a separate
+  // P8EST_CONNECT_EDGE ghost for the edge pass, so the callback fires there.)
   p8est_balance(impl_->forest, P8EST_CONNECT_FACE, nullptr);
 }
 
@@ -272,6 +282,22 @@ p8est_t* MeshForestAccess::Forest(const OctreeForest& forest) {
 
 p8est_ghost_t* MeshForestAccess::Ghost(const OctreeForest& forest) {
   return forest.impl_->ghost;
+}
+
+BoundingBox MeshForestAccess::QuadrantBounds(const OctreeForest& forest,
+                                            p4est_topidx_t treeid,
+                                            const p8est_quadrant_t* q) {
+  const p4est_qcoord_t len = P8EST_QUADRANT_LEN(q->level);
+  double v_lo[3];
+  double v_hi[3];
+  p8est_qcoord_to_vertex(forest.impl_->connectivity, treeid, q->x, q->y, q->z,
+                         v_lo);
+  p8est_qcoord_to_vertex(forest.impl_->connectivity, treeid,
+                         static_cast<p4est_qcoord_t>(q->x + len),
+                         static_cast<p4est_qcoord_t>(q->y + len),
+                         static_cast<p4est_qcoord_t>(q->z + len), v_hi);
+  const BoundingBox vtx_ext = ConnectivityVertexExtents(forest.impl_->connectivity);
+  return ScaleVertexBox(forest.impl_->domain, vtx_ext, v_lo, v_hi);
 }
 
 }  // namespace octlb

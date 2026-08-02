@@ -150,6 +150,66 @@ TEST(BcInstaller, SchaeferTurek_StampingCorrect) {
   EXPECT_GT(n_bulk, 0) << "fluid interior must remain kBulk";
 }
 
+// W3-d (T11) option A: StampTreeBoundaryCells must be geometry-aware -- when
+// a domain face spans both fluid and solid cells (e.g. the inlet face of a
+// cubic domain whose channel is a carved sub-region), it stamps only the
+// fluid cells with the spec's BcKind and leaves the solid cells kSolid. Without
+// this, the inlet spec would overwrite solid cells with kVelocityDirichlet.
+TEST(BcInstaller, StampTreeBoundaryCells_SkipsSolidCells) {
+  int size = 0;
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  if (size != 1) {
+    GTEST_SKIP() << "single-rank test";
+  }
+
+  OctreeForest forest(MPI_COMM_WORLD, UnitCubeDomain());
+  forest.partition();
+  const FacePairList pairs(forest);
+
+  constexpr int kN = 8;
+  BlockCollection<Lattice> blocks(1, [](OctantId) {
+    return Lattice(kN, kN, kN, 1);
+  });
+
+  // Carve a "channel": the x=0 face is fluid only for y in [2,6) (a slit); the
+  // rest of the face is solid. Pre-stamp the geometry: kBulk inside the slit,
+  // kSolid elsewhere on the face (and the rest of the block kBulk).
+  Lattice& lat = blocks[0];
+  for (int iy = 0; iy < kN; ++iy) {
+    for (int iz = 0; iz < kN; ++iz) {
+      const bool fluid = (iy >= 2 && iy < 6);
+      lat.set_bc_kind(0, iy, iz, fluid ? BcKind::kBulk : BcKind::kSolid);
+    }
+  }
+
+  DomainBcSpec spec;
+  spec.face = FaceDir::kXMin;
+  spec.type = DomainBcType::kInterpolatedVelocity;  // -> kVelocityDirichlet
+  const std::vector<DomainBcSpec> specs = {spec};
+  bc::StampTreeBoundaryCells(blocks, pairs.tree_boundary_faces(), specs, kN,
+                              kN, kN);
+
+  // Interior slit cells (not on any other domain face) are pure inlet-face
+  // fluid -> kVelocityDirichlet. Solid cells stay kSolid on every face (each
+  // face's stamp skips kSolid, including the corners shared with z/y faces).
+  for (int iy = 0; iy < kN; ++iy) {
+    for (int iz = 0; iz < kN; ++iz) {
+      const bool fluid = (iy >= 2 && iy < 6);
+      const BcKind got = lat.bc_kind(0, iy, iz);
+      if (fluid) {
+        if (iz >= 1 && iz < kN - 1) {
+          EXPECT_EQ(got, BcKind::kVelocityDirichlet)
+              << "inlet fluid cell (0," << iy << ',' << iz << ')';
+        }
+      } else {
+        EXPECT_EQ(got, BcKind::kSolid)
+            << "inlet solid cell must not be overwritten (0," << iy << ','
+            << iz << ')';
+      }
+    }
+  }
+}
+
 // R4: cavity3d migration. The single-block closed cavity has all six domain
 // faces as tree boundaries; StampTreeBoundaryCells with six kInterpolatedVelocity
 // specs stamps the whole outer shell kVelocityDirichlet and leaves the interior

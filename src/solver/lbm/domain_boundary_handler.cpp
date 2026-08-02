@@ -46,7 +46,7 @@ void ConcreteDomainBoundaryHandler::apply(CollideRhoStats* rho_stats,
           }
           BcDispatcher::collide(lat, ix, iy, iz, nx_, ny_, nz_, omega_,
                                  specs_, rho_stats, average_rho,
-                                 use_const_rho_bgk);
+                                 use_const_rho_bgk, current_time_);
         }
       }
     }
@@ -67,7 +67,8 @@ void ConcreteDomainBoundaryHandler::collide_interleaved_with(
     for (int iy = 0; iy < ny_; ++iy) {
       for (int iz = 0; iz < nz_; ++iz) {
         BcDispatcher::collide(lat, ix, iy, iz, nx_, ny_, nz_, omega_, specs_,
-                              rho_stats, average_rho, use_const_rho_bgk);
+                              rho_stats, average_rho, use_const_rho_bgk,
+                              current_time_);
       }
     }
   }
@@ -83,7 +84,7 @@ void ConcreteDomainBoundaryHandler::apply_post_stream() {
     seen[static_cast<std::size_t>(face.octant_id)] = true;
     DomainBoundaryLattice& lat = blocks_[face.octant_id];
     boundary::ApplyInterpolatedVelocityBoundaryCells<double, Descriptor>(
-        lat, nx_, ny_, nz_, omega_, specs_, padding_mode_);
+        lat, nx_, ny_, nz_, omega_, specs_, current_time_, padding_mode_);
   }
 }
 

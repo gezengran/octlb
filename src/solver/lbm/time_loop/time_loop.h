@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include <mpi.h>
+
 #include "src/mesh/forest/octree_forest.h"
 #include "src/solver/field/block_collection.h"
 #include "src/solver/field/ghost_schedule.h"
@@ -129,6 +131,17 @@ inline TimeLoop::TimeLoop(const OctreeForest& forest,
     const int lvl = forest.quadrant_level(static_cast<OctantId>(i));
     max_level_ = std::max(max_level_, lvl);
   }
+  // max_level_ must be GLOBAL (the max level across ALL ranks), not per-rank.
+  // advance(level) recurses to max_level_ and calls coupler.apply_half_time /
+  // apply_full_time at each level. If ranks have different per-rank max levels
+  // (AMR partition: some ranks own the refined octants, others only coarse
+  // level-0), a rank with the deeper max would call apply_half_time(L) and
+  // post a cross-rank Irecv at a level L the shallower peer never reaches (its
+  // advance returns at its own lower max_level_), so the peer never posts the
+  // matching Isend -> Waitall hangs. Allreduce so every rank recurses to the
+  // same depth; ranks with no coarse-fine at level L post nothing (empty
+  // Waitall), keeping the coupler exchange symmetric per level.
+  MPI_Allreduce(MPI_IN_PLACE, &max_level_, 1, MPI_INT, MPI_MAX, forest.comm());
 
   octants_by_level_.assign(static_cast<std::size_t>(max_level_ + 1), {});
   for (label i = 0; i < forest.local_num_octants(); ++i) {

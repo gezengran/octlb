@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace octlb {
@@ -20,6 +21,11 @@ namespace octlb {
 // messages on (src, dst, tag), so per-peer uniqueness is sufficient and tags
 // may be reused across different rank-pairs without ambiguity.
 //
+// Lookup is keyed by (peer_rank, face_key). A flat key→tag map is wrong: the
+// same uint64 key can appear under two peers (hash collision, or a same-rank
+// "self" registration colliding with a cross-rank face). The later peer's
+// assign() would overwrite the earlier tag and break symmetry for GhostSchedule.
+//
 // Pure / dependency-free: MPI_TAG_UB is taken as a constructor int; this class
 // does not call MPI or p4est. The caller queries MPI_TAG_UB and passes it in.
 class CommTagAssigner {
@@ -33,7 +39,7 @@ class CommTagAssigner {
   }
 
   // Compute per-peer sorted tags for every added face. After this returns,
-  // tag_for() returns the assigned tag for each added face key.
+  // tag_for(key, peer) returns the assigned tag.
   void assign() {
     for (auto& [peer, keys] : pending_by_peer_) {
       std::sort(keys.begin(), keys.end());
@@ -43,23 +49,32 @@ class CommTagAssigner {
         if (tag > tag_ub_) {
           tag = tag_ub_;  // Defensive: faces-per-peer exceeds MPI_TAG_UB.
         }
-        tag_by_face_key_[keys[i]] = tag;
+        tag_by_peer_key_[{peer, keys[i]}] = tag;
       }
     }
   }
 
-  // Returns the assigned tag for face_key, or -1 if unknown / pre-assign().
-  int tag_for(uint64_t face_key) const {
-    const auto it = tag_by_face_key_.find(face_key);
-    return it == tag_by_face_key_.end() ? -1 : it->second;
+  // Returns the assigned tag for (face_key, peer_rank), or -1 if unknown.
+  int tag_for(uint64_t face_key, int peer_rank) const {
+    const auto it = tag_by_peer_key_.find({peer_rank, face_key});
+    return it == tag_by_peer_key_.end() ? -1 : it->second;
   }
 
   int tag_ub() const { return tag_ub_; }
 
  private:
+  struct PeerKeyHash {
+    std::size_t operator()(const std::pair<int, uint64_t>& p) const {
+      // peer in low bits; mix key so nearby peers don't clump.
+      return std::hash<uint64_t>{}(p.second) ^
+             (static_cast<std::size_t>(p.first) * 0x9e3779b97f4a7c15ULL);
+    }
+  };
+
   int tag_ub_;
   std::unordered_map<int, std::vector<uint64_t>> pending_by_peer_;
-  std::unordered_map<uint64_t, int> tag_by_face_key_;
+  std::unordered_map<std::pair<int, uint64_t>, int, PeerKeyHash>
+      tag_by_peer_key_;
 };
 
 }  // namespace octlb
