@@ -21,6 +21,19 @@ class InletVelocityField {
   virtual ~InletVelocityField() = default;
   virtual void velocity(int ix, int iy, int iz, double t,
                         double u[3]) const = 0;
+
+  // Physical-coordinate mode: a profile that depends on the cell's domain
+  // position (e.g. a Poiseuille duct profile on a channel patch carved into a
+  // larger cube face, where block-local indices do not map to the duct cross-
+  // section). When is_physical() is true, the BC caller supplies the cell's
+  // physical (x,y,z) and calls velocity_phys() instead of the index-based
+  // velocity(). The default (is_physical()==false) keeps index-based profiles
+  // unchanged.
+  virtual bool is_physical() const { return false; }
+  virtual void velocity_phys(double /*x*/, double /*y*/, double /*z*/,
+                             double /*t*/, double u[3]) const {
+    u[0] = u[1] = u[2] = 0.0;
+  }
 };
 
 // Parabolic (Poiseuille) duct profile on a rectangular cross-section of the
@@ -145,6 +158,114 @@ class UniformInletProfile : public InletVelocityField {
   }
 
   std::array<double, 3> u_const_;
+  double ramp_end_t_;
+};
+
+// Physical-coordinate Poiseuille duct profile on a rectangular channel patch
+// carved into a larger domain face. Unlike PoiseuilleInletProfile (which keys
+// off block-local indices and assumes the duct fills the whole block face),
+// this profile evaluates the parabola from the cell's physical in-plane
+// coordinate relative to the channel cross-section [lo, hi] on each in-plane
+// axis. The face-normal coordinate is ignored. u = ramp(t) * u_peak *
+// parab(in0) * parab(in1) * flow_dir, where parab(c) = 4*c*(1-c) with
+// c = (coord - lo)/(hi - lo) clamped to [0, 1] (0 at the wall, 1 at the centre).
+// The product of two parabolas gives a rectangular-duct profile whose
+// mean/peak = (2/3)^2 = 4/9, so u_peak = 2.25 * u_mean (Schäfer-Turek latticeU
+// mean -> peak 0.045 at u_mean 0.02). ramp_end_t <= 0 disables the ramp.
+//
+// Callers must set the block's physical origin (BlockLattice::set_phys_origin)
+// so the BC dispatcher can supply physical (x,y,z) to velocity_phys().
+class ChannelPoiseuilleInletProfile : public InletVelocityField {
+ public:
+  ChannelPoiseuilleInletProfile(FaceDir face_dir, double in0_lo, double in0_hi,
+                                double in1_lo, double in1_hi, double u_peak,
+                                std::array<double, 3> flow_dir,
+                                double ramp_end_t = 0.0)
+      : face_dir_(face_dir),
+        in0_lo_(in0_lo),
+        in0_hi_(in0_hi),
+        in1_lo_(in1_lo),
+        in1_hi_(in1_hi),
+        u_peak_(u_peak),
+        flow_dir_(flow_dir),
+        ramp_end_t_(ramp_end_t) {}
+
+  bool is_physical() const override { return true; }
+
+  void velocity(int /*ix*/, int /*iy*/, int /*iz*/, double /*t*/,
+                double u[3]) const override {
+    // Physical profiles cannot be evaluated from block-local indices alone.
+    u[0] = u[1] = u[2] = 0.0;
+  }
+
+  void velocity_phys(double x, double y, double z, double t,
+                     double u[3]) const override {
+    const double r = Ramp(t);
+    const double c0 = Clamp((In0(x, y, z) - in0_lo_) / (in0_hi_ - in0_lo_));
+    const double c1 = Clamp((In1(x, y, z) - in1_lo_) / (in1_hi_ - in1_lo_));
+    const double p0 = 4.0 * c0 * (1.0 - c0);
+    const double p1 = 4.0 * c1 * (1.0 - c1);
+    const double mag = r * u_peak_ * p0 * p1;
+    for (int d = 0; d < 3; ++d) {
+      u[d] = mag * flow_dir_[d];
+    }
+  }
+
+ private:
+  static double Clamp(double c) {
+    if (c < 0.0) return 0.0;
+    if (c > 1.0) return 1.0;
+    return c;
+  }
+  double Ramp(double t) const {
+    if (ramp_end_t_ <= 0.0) {
+      return 1.0;
+    }
+    double x = t / ramp_end_t_;
+    if (x < 0.0) {
+      x = 0.0;
+    } else if (x > 1.0) {
+      x = 1.0;
+    }
+    const double x2 = x * x;
+    const double x3 = x2 * x;
+    return x3 * (10.0 + x * (-15.0 + 6.0 * x));
+  }
+
+  // The two in-plane PHYSICAL coordinates for the inlet face (the face-normal
+  // coordinate is irrelevant to the duct profile and is ignored).
+  double In0(double x, double y, double /*z*/) const {
+    switch (face_dir_) {
+      case FaceDir::kXMin:
+      case FaceDir::kXMax:
+        return y;
+      case FaceDir::kYMin:
+      case FaceDir::kYMax:
+        return x;
+      default:  // kZMin / kZMax
+        return x;
+    }
+  }
+  double In1(double /*x*/, double y, double z) const {
+    switch (face_dir_) {
+      case FaceDir::kXMin:
+      case FaceDir::kXMax:
+        return z;
+      case FaceDir::kYMin:
+      case FaceDir::kYMax:
+        return z;
+      default:  // kZMin / kZMax
+        return y;
+    }
+  }
+
+  FaceDir face_dir_;
+  double in0_lo_;
+  double in0_hi_;
+  double in1_lo_;
+  double in1_hi_;
+  double u_peak_;
+  std::array<double, 3> flow_dir_;
   double ramp_end_t_;
 };
 

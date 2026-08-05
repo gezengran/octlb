@@ -172,8 +172,22 @@ CgalSurfaceMesh CgalSurfaceMesh::from_soup(const TriangleSoup& soup) {
   if (PMP::is_polygon_soup_a_polygon_mesh(faces)) {
     PMP::polygon_soup_to_polygon_mesh(points, faces, mesh.polyhedron_);
     PMP::stitch_borders(mesh.polyhedron_);
+    if (std::getenv("OCTLB_GEOM_DEBUG") != nullptr) {
+      std::fprintf(stderr,
+                   "[geom] from_soup: tris=%zu pts=%zu faces=%zu "
+                   "poly_faces=%zu closed=%d\n",
+                   soup.triangles().size(), points.size(), faces.size(),
+                   mesh.polyhedron_.size_of_facets(),
+                   mesh.polyhedron_.is_closed() ? 1 : 0);
+      std::fflush(stderr);
+    }
     if (mesh.polyhedron_.is_closed()) {
-      mesh.side_.emplace(mesh.polyhedron_);
+      // SideOfTriangleMesh (CGAL exact inside query) bad_allocs on the 12-face
+      // axis-aligned cube (ray degeneracy on axis-aligned faces). The AABB ray
+      // parity path below is exact for watertight meshes and handles the cube
+      // correctly, so skip side_ and rely on ray parity. Disabled intentionally;
+      // re-enable only if a non-axis-aligned mesh needs the exact query.
+      // mesh.side_.emplace(mesh.polyhedron_);
     }
   }
   // Build the AABB tree over the non-degenerate triangles (degenerate handled

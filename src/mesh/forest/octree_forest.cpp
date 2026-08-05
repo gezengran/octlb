@@ -110,6 +110,33 @@ struct RefineBridge {
   int max_level = 0;
 };
 
+struct RefineBoundsBridge {
+  std::function<bool(const BoundingBox&, int)> criterion;
+  int max_level = 0;
+  BoundingBox domain{};
+  BoundingBox vtx_ext{};
+};
+
+int RefineBoundsCallback(p8est_t* forest, p4est_topidx_t which_tree,
+                         p8est_quadrant_t* quadrant) {
+  auto* bridge = static_cast<RefineBoundsBridge*>(forest->user_pointer);
+  if (quadrant->level >= static_cast<int8_t>(bridge->max_level)) {
+    return 0;
+  }
+  const p4est_qcoord_t len = P8EST_QUADRANT_LEN(quadrant->level);
+  double v_lo[3];
+  double v_hi[3];
+  p8est_qcoord_to_vertex(forest->connectivity, which_tree, quadrant->x,
+                         quadrant->y, quadrant->z, v_lo);
+  p8est_qcoord_to_vertex(forest->connectivity, which_tree,
+                         static_cast<p4est_qcoord_t>(quadrant->x + len),
+                         static_cast<p4est_qcoord_t>(quadrant->y + len),
+                         static_cast<p4est_qcoord_t>(quadrant->z + len), v_hi);
+  const BoundingBox box =
+      ScaleVertexBox(bridge->domain, bridge->vtx_ext, v_lo, v_hi);
+  return bridge->criterion(box, static_cast<int>(quadrant->level)) ? 1 : 0;
+}
+
 struct PartitionBridge {
   std::function<int(OctantId)> weight_fn;
 };
@@ -140,6 +167,7 @@ struct OctreeForest::Impl {
   p8est_t* forest = nullptr;
   p8est_ghost_t* ghost = nullptr;
   RefineBridge refine_bridge{};
+  RefineBoundsBridge refine_bounds_bridge{};
   PartitionBridge partition_bridge{};
 
   ~Impl() {
@@ -214,6 +242,21 @@ void OctreeForest::refine(std::function<bool(OctantId)> criterion,
   impl_->refine_bridge.max_level = max_level;
   impl_->forest->user_pointer = &impl_->refine_bridge;
   p8est_refine_ext(impl_->forest, 1, max_level, RefineCallback, nullptr,
+                   nullptr);
+}
+
+void OctreeForest::refine(std::function<bool(const BoundingBox&, int)> criterion,
+                          int max_level) {
+  if (!criterion) {
+    throw std::invalid_argument("refine criterion must not be null");
+  }
+  impl_->refine_bounds_bridge.criterion = std::move(criterion);
+  impl_->refine_bounds_bridge.max_level = max_level;
+  impl_->refine_bounds_bridge.domain = impl_->domain;
+  impl_->refine_bounds_bridge.vtx_ext =
+      ConnectivityVertexExtents(impl_->connectivity);
+  impl_->forest->user_pointer = &impl_->refine_bounds_bridge;
+  p8est_refine_ext(impl_->forest, 1, max_level, RefineBoundsCallback, nullptr,
                    nullptr);
 }
 

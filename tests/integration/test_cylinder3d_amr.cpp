@@ -288,8 +288,10 @@ TEST(Cylinder3dAmr, Amr_Cd_SameOrderAsOpenLb) {
   }
 
   Cylinder3dConfig cfg = AmrConfig(CylinderStlPath(), /*max_level=*/5);
-  cfg.u_inlet = 0.02;  // Schäfer-Turek latticeU mean (Re=20)
+  cfg.u_inlet = 0.02;  // Schäfer-Turek U_max peak (Re=20; duct mean = 4/9 * this)
   cfg.ramp_end_t = 0.0;
+  cfg.poiseuille_inlet = true;  // W4 alignment: Poiseuille duct inlet
+  cfg.refine_channel_to_finest = true;  // T11: resolve inlet+channel at finest
   Cylinder3dCase cas(MPI_COMM_WORLD, cfg);
   const int steps = CylinderSteps(4000);
   cas.advance_steps(steps);
@@ -320,8 +322,10 @@ TEST(Cylinder3dAmr, Amr_Cd_WithinOnePercentOfOpenLb) {
   }
 
   Cylinder3dConfig cfg = AmrConfig(CylinderStlPath(), /*max_level=*/5);
-  cfg.u_inlet = 0.02;  // Schäfer-Turek latticeU mean (Re=20)
+  cfg.u_inlet = 0.02;  // Schäfer-Turek U_max peak (Re=20; duct mean = 4/9 * this)
   cfg.ramp_end_t = 0.0;
+  cfg.poiseuille_inlet = true;  // W4 alignment: Poiseuille duct inlet
+  cfg.refine_channel_to_finest = true;  // T11: resolve inlet+channel at finest
   Cylinder3dCase cas(MPI_COMM_WORLD, cfg);
   const int steps = CylinderSteps(16000);
   cas.advance_steps(steps);

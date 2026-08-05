@@ -306,6 +306,23 @@ const T* BlockLattice<T, DESCRIPTOR>::populations_at_halo(int hx, int hy,
   return &populations_[halo_idx(hx, hy, hz)];
 }
 
+template <typename T, typename DESCRIPTOR>
+void BlockLattice<T, DESCRIPTOR>::take_post_collide_snapshot() {
+  if (post_collide_snapshot_.size() != populations_.size()) {
+    post_collide_snapshot_.resize(populations_.size());
+  }
+  std::memcpy(post_collide_snapshot_.data(), populations_.data(),
+              populations_.size() * sizeof(T));
+}
+
+template <typename T, typename DESCRIPTOR>
+const T* BlockLattice<T, DESCRIPTOR>::post_collide_populations_at_halo(
+    int hx, int hy, int hz) const {
+  // Returns nullptr if no snapshot was taken (caller must guard).
+  if (post_collide_snapshot_.empty()) return nullptr;
+  return &post_collide_snapshot_[halo_idx(hx, hy, hz)];
+}
+
 namespace {
 
 template <typename T, typename DESCRIPTOR>
