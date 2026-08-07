@@ -28,10 +28,16 @@ Cylinder3dConfig SanityConfig(const std::string& stl_path) {
   cfg.stl_path = stl_path;
   cfg.n = 8;
   cfg.max_level = 2;          // 4^3 = 64 same-level octants
-  cfg.omega = 1.0 / 0.6;
-  cfg.u_inlet = 0.05;
+  // T11: c90fdb3's watertight-box fix correctly confines flow to the 0.41 duct
+  // (the old non-watertight box left the whole cube as fluid). The confined
+  // duct + ~1-cell cylinder at this coarse level is marginally unstable at
+  // u=0.05/tau=0.6 (pressure-outlet runaway; see EdgeExchange note). Low Ma +
+  // viscous tau + a smooth ramp gives a stable transient for the sanity oracle
+  // (runs / mass bounded / drag sign), which is all this gate checks.
+  cfg.omega = 1.0;        // tau=1.0 (viscous): stable on the confined duct
+  cfg.u_inlet = 0.01;     // low Ma (~0.017) avoids pressure-outlet runaway
   cfg.rho0 = 1.0;
-  cfg.ramp_end_t = 0.0;
+  cfg.ramp_end_t = 5.0;   // smooth start-up ramp
   return cfg;
 }
 
