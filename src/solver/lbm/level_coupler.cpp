@@ -297,6 +297,13 @@ LevelCoupler::LevelCoupler(MPI_Comm comm, const FacePairList& faces,
       max_payload * static_cast<std::size_t>(kMacroDoubles) * 2;
   send_buf_.resize(mpi_batches_.size() * buf_stride);
   recv_buf_.resize(mpi_batches_.size() * buf_stride);
+  // Cross-rank restrict buffers (same batches, reversed direction).
+  const std::size_t restrict_stride =
+      max_payload * static_cast<std::size_t>(kRestrictDoubles);
+  restrict_send_buf_.resize(mpi_batches_.size() * restrict_stride);
+  restrict_recv_buf_.resize(mpi_batches_.size() * restrict_stride);
+  recv_restrict_.assign(plan_.size() * static_cast<std::size_t>(kRestrictDoubles),
+                        0.0);
 }
 
 std::size_t LevelCoupler::LevelRangeBegin(int coarse_level) const {
@@ -482,14 +489,139 @@ void LevelCoupler::apply_full_time(int coarse_level) {
                     false);
 }
 
+void LevelCoupler::ExchangeFineForRestrict(int fine_level) {
+  // Reuse mpi_batches_ but reverse the direction: the FINE owner (coarse_sends
+  // == false) now SENDS to the coarse rank; the COARSE owner (coarse_sends ==
+  // true) now RECVs from the fine rank. Payload per point = kRestrictDoubles.
+  std::size_t max_payload = 0;
+  for (const MpiBatch& batch : mpi_batches_) {
+    max_payload = std::max(max_payload, batch.plan_indices.size());
+  }
+  const std::size_t stride =
+      max_payload * static_cast<std::size_t>(kRestrictDoubles);
+
+  std::vector<MPI_Request> requests;
+  requests.reserve(mpi_batches_.size());
+
+  for (std::size_t b = 0; b < mpi_batches_.size(); ++b) {
+    const MpiBatch& batch = mpi_batches_[b];
+    // Count points at this fine_level first (send/recv counts must match).
+    int count = 0;
+    for (std::size_t plan_index : batch.plan_indices) {
+      if (plan_[plan_index].fine_level == fine_level) ++count;
+    }
+    if (count == 0) continue;
+
+    if (!batch.coarse_sends) {
+      // I am the FINE owner: compute + pack + send to the coarse rank.
+      double* base = &restrict_send_buf_[b * stride];
+      int slot = 0;
+      for (std::size_t plan_index : batch.plan_indices) {
+        const CouplingPoint& pt = plan_[plan_index];
+        if (pt.fine_level != fine_level) continue;
+        MacroState fine_macro{};
+        ReadMacro(blocks_[pt.fine_id], pt.fi, pt.fj, pt.fk, &fine_macro);
+        MacroState neighbor_sum{};
+        int neighbor_count = 0;
+        using D = olb::descriptors::D3Q19<>;
+        for (int jPop = 1; jPop < D::q; ++jPop) {
+          const int nix = pt.fi + olb::descriptors::c<D>(jPop, 0);
+          const int niy = pt.fj + olb::descriptors::c<D>(jPop, 1);
+          const int niz = pt.fk + olb::descriptors::c<D>(jPop, 2);
+          if (nix < 0 || nix >= nx_ || niy < 0 || niy >= ny_ || niz < 0 ||
+              niz >= nz_) {
+            continue;
+          }
+          MacroState nmacro{};
+          ReadMacro(blocks_[pt.fine_id], nix, niy, niz, &nmacro);
+          for (int p = 0; p < LatticeD3Q19::kQ; ++p) {
+            neighbor_sum.f_neq[p] += nmacro.f_neq[p];
+          }
+          ++neighbor_count;
+        }
+        double* w = base + slot * kRestrictDoubles;
+        w[0] = fine_macro.rho;
+        w[1] = fine_macro.u[0];
+        w[2] = fine_macro.u[1];
+        w[3] = fine_macro.u[2];
+        for (int p = 0; p < LatticeD3Q19::kQ; ++p) w[4 + p] = fine_macro.f_neq[p];
+        for (int p = 0; p < LatticeD3Q19::kQ; ++p)
+          w[4 + LatticeD3Q19::kQ + p] = neighbor_sum.f_neq[p];
+        w[4 + 2 * LatticeD3Q19::kQ] = static_cast<double>(neighbor_count);
+        ++slot;
+      }
+      MPI_Request req{};
+      MPI_Isend(base, count * kRestrictDoubles, MPI_DOUBLE, batch.peer_rank,
+                batch.comm_tag, comm_, &req);
+      requests.push_back(req);
+    } else {
+      // I am the COARSE owner: recv from the fine rank.
+      MPI_Request req{};
+      MPI_Irecv(&restrict_recv_buf_[b * stride], count * kRestrictDoubles,
+                MPI_DOUBLE, batch.peer_rank, batch.comm_tag, comm_, &req);
+      requests.push_back(req);
+    }
+  }
+
+  if (!requests.empty()) {
+    MPI_Waitall(static_cast<int>(requests.size()), requests.data(),
+                MPI_STATUSES_IGNORE);
+  }
+
+  // Coarse owner unpacks into per-plan-index storage.
+  for (std::size_t b = 0; b < mpi_batches_.size(); ++b) {
+    const MpiBatch& batch = mpi_batches_[b];
+    if (!batch.coarse_sends) continue;
+    int count = 0;
+    for (std::size_t plan_index : batch.plan_indices) {
+      if (plan_[plan_index].fine_level != fine_level) continue;
+      const double* r = &restrict_recv_buf_[b * stride] +
+                        count * kRestrictDoubles;
+      double* dst = &recv_restrict_[plan_index * kRestrictDoubles];
+      for (int p = 0; p < kRestrictDoubles; ++p) dst[p] = r[p];
+      ++count;
+    }
+  }
+}
+
+void LevelCoupler::ApplyRestrictionCrossRank(int fine_level) {
+  for (std::size_t i = 0; i < plan_.size(); ++i) {
+    const CouplingPoint& pt = plan_[i];
+    if (pt.fine_level != fine_level) continue;
+    // Only the cross-rank coarse-only owner writes here; local-local is done
+    // in restrict(), cross-rank fine-only sent in ExchangeFineForRestrict.
+    if (!OwnsCoarse(pt, my_rank_) || OwnsFine(pt, my_rank_)) continue;
+
+    const double* r = &recv_restrict_[i * kRestrictDoubles];
+    MacroState fine_macro{};
+    fine_macro.rho = r[0];
+    fine_macro.u[0] = r[1];
+    fine_macro.u[1] = r[2];
+    fine_macro.u[2] = r[3];
+    for (int p = 0; p < LatticeD3Q19::kQ; ++p) fine_macro.f_neq[p] = r[4 + p];
+    MacroState neighbor_sum{};
+    for (int p = 0; p < LatticeD3Q19::kQ; ++p)
+      neighbor_sum.f_neq[p] = r[4 + LatticeD3Q19::kQ + p];
+    const int neighbor_count =
+        static_cast<int>(r[4 + 2 * LatticeD3Q19::kQ]);
+
+    WriteRestriction(blocks_[pt.coarse_id], pt.ci, pt.cj, pt.ck, fine_macro,
+                     neighbor_sum, neighbor_count, restrict_scale_);
+  }
+}
+
 void LevelCoupler::restrict(int fine_level) {
+  // Cross-rank pairs: fine owner ships the restricted macro to the coarse owner.
+  ExchangeFineForRestrict(fine_level);
+  ApplyRestrictionCrossRank(fine_level);
+
   for (std::size_t i = 0; i < plan_.size(); ++i) {
     const CouplingPoint& pt = plan_[i];
     if (pt.fine_level != fine_level) {
       continue;
     }
-    // Restriction only when both sides are local (cross-rank restrict is a
-    // separate exchange path; ghost ids must not be treated as local).
+    // Local-local only: cross-rank pairs are handled above (the fine owner
+    // must not touch the coarse ghost id; the coarse owner writes from recv).
     if (!OwnsCoarse(pt, my_rank_) || !OwnsFine(pt, my_rank_)) {
       continue;
     }

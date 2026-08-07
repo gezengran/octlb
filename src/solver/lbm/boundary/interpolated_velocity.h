@@ -68,13 +68,18 @@ inline bool IsInteriorTopLidCell(int ix, int iy, int iz, int nx, int ny,
 
 inline void PrescribedBoundaryU(int ix, int iy, int iz, int nx, int ny, int nz,
                                 const std::vector<DomainBcSpec>& specs,
-                                double t, double u[3]) {
+                                double t, double u[3],
+                                const double origin[3] = nullptr,
+                                double cell_width = 0.0) {
   u[0] = u[1] = u[2] = 0.0;
   // A velocity-Dirichlet face with an inlet_field prescribes u per cell (e.g.
   // cylinder3d's uniform/ Poiseuille inlet). Pick the field on any face the
   // cell touches (flat inlet cell -> its face; inlet/wall corner -> the inlet).
   // t is the current simulation time threaded from DomainBoundaryHandler so
   // the inlet_field's ramp (PolynomialStartScale) is honoured on the FD path.
+  // A physical-coordinate field (is_physical()) is evaluated from the cell's
+  // domain position = block phys_origin + (i + 0.5) * cell_width, so a duct
+  // profile on a channel patch is correct regardless of the octant layout.
   const struct {
     bool on;
     FaceDir dir;
@@ -89,7 +94,14 @@ inline void PrescribedBoundaryU(int ix, int iy, int iz, int nx, int ny, int nz,
     const DomainBcSpec spec = FindSpec(specs, f.dir);
     if (spec.inlet_field) {
       double u_d[3]{};
-      spec.inlet_field->velocity(ix, iy, iz, t, u_d);
+      if (origin != nullptr && spec.inlet_field->is_physical()) {
+        const double px = origin[0] + (ix + 0.5) * cell_width;
+        const double py = origin[1] + (iy + 0.5) * cell_width;
+        const double pz = origin[2] + (iz + 0.5) * cell_width;
+        spec.inlet_field->velocity_phys(px, py, pz, t, u_d);
+      } else {
+        spec.inlet_field->velocity(ix, iy, iz, t, u_d);
+      }
       for (int d = 0; d < 3; ++d) u[d] = u_d[d];
       return;
     }
@@ -330,7 +342,8 @@ class BoundaryLatticeView {
 
   void PrescribedU(int ix, int iy, int iz, T u[DESCRIPTOR::d]) const {
     double u_d[3]{};
-    PrescribedBoundaryU(ix, iy, iz, nx_, ny_, nz_, specs_, t_, u_d);
+    PrescribedBoundaryU(ix, iy, iz, nx_, ny_, nz_, specs_, t_, u_d,
+                        lat_.phys_origin().data(), lat_.phys_cell_width());
     for (int d = 0; d < DESCRIPTOR::d; ++d) {
       u[d] = static_cast<T>(u_d[d]);
     }
@@ -805,7 +818,9 @@ inline T BoundaryCellStatisticRho(Lattice& lat, int ix, int iy, int iz, int nx,
                                   const std::vector<DomainBcSpec>& specs,
                                   double t = 0.0) {
   double u_wall_d[3]{};
-  detail::PrescribedBoundaryU(ix, iy, iz, nx, ny, nz, specs, t, u_wall_d);
+  detail::PrescribedBoundaryU(ix, iy, iz, nx, ny, nz, specs, t, u_wall_d,
+                              lat.phys_origin().data(),
+                              lat.phys_cell_width());
   T u[DESCRIPTOR::d]{};
   for (int d = 0; d < DESCRIPTOR::d; ++d) {
     u[d] = static_cast<T>(u_wall_d[d]);
@@ -850,7 +865,9 @@ inline void CollideDirichletBoundaryCellAt(Lattice& lat, int ix, int iy, int iz,
     return;
   }
   double u_wall_d[3]{};
-  detail::PrescribedBoundaryU(ix, iy, iz, nx, ny, nz, specs, t, u_wall_d);
+  detail::PrescribedBoundaryU(ix, iy, iz, nx, ny, nz, specs, t, u_wall_d,
+                              lat.phys_origin().data(),
+                              lat.phys_cell_width());
   T u[DESCRIPTOR::d]{};
   for (int d = 0; d < DESCRIPTOR::d; ++d) {
     u[d] = static_cast<T>(u_wall_d[d]);

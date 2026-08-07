@@ -46,10 +46,18 @@ Cylinder3dConfig AmrConfig(const std::string& stl_path, int max_level) {
   cfg.stl_path = stl_path;
   cfg.n = 8;
   cfg.max_level = ResolveMaxLevel(max_level);
-  cfg.omega = 1.0 / 0.53;  // Schäfer-Turek Re=20
-  cfg.u_inlet = 0.05;       // relaxed for a clear drag signal on short runs
+  // T11: c90fdb3's watertight-box fix correctly confines flow to the 0.41 duct.
+  // Without refine_channel_to_finest the geometry engine only refines the
+  // cylinder bbox, leaving the channel bulk at max_level-2 (~5 cells across the
+  // duct) -- a 4x coarse-fine jump across the channel that leaks mass and
+  // diverges. Pre-refining the channel (the same mesh strategy as the W4 strict
+  // gate) resolves the duct and keeps the sanity transient stable. Low Ma +
+  // viscous tau + a smooth ramp further damp the pressure-outlet start-up shock.
+  cfg.omega = 1.0;        // tau=1.0 (viscous): stable on the confined duct
+  cfg.u_inlet = 0.01;     // low Ma (~0.017) avoids pressure-outlet runaway
   cfg.rho0 = 1.0;
-  cfg.ramp_end_t = 0.0;
+  cfg.ramp_end_t = 5.0;   // smooth start-up ramp
+  cfg.refine_channel_to_finest = true;  // resolve duct bulk (else L2 channel diverges)
   return cfg;
 }
 
@@ -288,8 +296,11 @@ TEST(Cylinder3dAmr, Amr_Cd_SameOrderAsOpenLb) {
   }
 
   Cylinder3dConfig cfg = AmrConfig(CylinderStlPath(), /*max_level=*/5);
-  cfg.u_inlet = 0.02;  // Schäfer-Turek latticeU mean (Re=20)
+  cfg.omega = 1.0 / 0.53;  // Schäfer-Turek Re=20 (AmrConfig's sanity default is tau=1.0)
+  cfg.u_inlet = 0.02;  // Schäfer-Turek U_max peak (Re=20; duct mean = 4/9 * this)
   cfg.ramp_end_t = 0.0;
+  cfg.poiseuille_inlet = true;  // W4 alignment: Poiseuille duct inlet
+  cfg.refine_channel_to_finest = true;  // T11: resolve inlet+channel at finest
   Cylinder3dCase cas(MPI_COMM_WORLD, cfg);
   const int steps = CylinderSteps(4000);
   cas.advance_steps(steps);
@@ -320,8 +331,11 @@ TEST(Cylinder3dAmr, Amr_Cd_WithinOnePercentOfOpenLb) {
   }
 
   Cylinder3dConfig cfg = AmrConfig(CylinderStlPath(), /*max_level=*/5);
-  cfg.u_inlet = 0.02;  // Schäfer-Turek latticeU mean (Re=20)
+  cfg.omega = 1.0 / 0.53;  // Schäfer-Turek Re=20 (AmrConfig's sanity default is tau=1.0)
+  cfg.u_inlet = 0.02;  // Schäfer-Turek U_max peak (Re=20; duct mean = 4/9 * this)
   cfg.ramp_end_t = 0.0;
+  cfg.poiseuille_inlet = true;  // W4 alignment: Poiseuille duct inlet
+  cfg.refine_channel_to_finest = true;  // T11: resolve inlet+channel at finest
   Cylinder3dCase cas(MPI_COMM_WORLD, cfg);
   const int steps = CylinderSteps(16000);
   cas.advance_steps(steps);

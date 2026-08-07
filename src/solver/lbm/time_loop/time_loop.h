@@ -76,6 +76,14 @@ class TimeLoop {
   const TimeLoopCounters& counters() const { return counters_; }
   void reset_counters();
 
+  // T11 MEM-timing diagnostic: when enabled, snapshot every block's populations_
+  // right before stream_level (the post-collide + post-BC + post-ghost pre-stream
+  // state) so a drag post-processor can recompute the MEM force at the correct
+  // (outgoing-f_i) timing instead of the post-stream (bounced-back) timing. Off
+  // by default (extra memcpy per block per step).
+  void set_snapshot_post_collide(bool on) { snapshot_post_collide_ = on; }
+  bool snapshot_post_collide() const { return snapshot_post_collide_; }
+
   /** ConstRhoBGK average rho from the previous collide (OpenLB statistics lag). */
   double average_rho() const { return average_rho_; }
 
@@ -109,6 +117,7 @@ class TimeLoop {
 
   std::vector<std::vector<OctantId>> octants_by_level_;
   TimeLoopCounters counters_;
+  bool snapshot_post_collide_ = false;
 };
 
 inline TimeLoop::TimeLoop(const OctreeForest& forest,
@@ -200,6 +209,11 @@ inline void TimeLoop::advance(int level) {
                      use_const_rho_bgk_);
   }
   ghosts_.exchange();
+  if (snapshot_post_collide_) {
+    for (OctantId id : octants_by_level_[static_cast<std::size_t>(level)]) {
+      blocks_[id].take_post_collide_snapshot();
+    }
+  }
   stream_level(level);
   domain_bc_.apply_post_stream();
   // OpenLB collectStatistics() runs after PostStream; stats are from collide only.

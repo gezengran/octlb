@@ -207,12 +207,35 @@ class BlockLattice {
   void set_octant_id(OctantId id) { octant_id_ = id; }
   OctantId octant_id() const { return octant_id_; }
 
+  // Physical origin (lower corner) + cell width of this block in domain
+  // coordinates, set from the owning octant's quadrant_bounds. Used by
+  // physical-coordinate inlet fields (e.g. a channel Poiseuille profile) so a
+  // spatially varying BC can be evaluated from physical position rather than
+  // block-local indices. Defaults keep index-based BCs (origin unset) correct.
+  void set_phys_origin(std::array<double, 3> origin, double cell_width) {
+    phys_origin_ = origin;
+    phys_cell_width_ = cell_width;
+  }
+  const std::array<double, 3>& phys_origin() const { return phys_origin_; }
+  double phys_cell_width() const { return phys_cell_width_; }
+
   void set_bc_kind(int ix, int iy, int iz, BcKind kind);
   BcKind bc_kind(int ix, int iy, int iz) const;
 
   // Halo coordinates: hx in [0, nx+2*h_), hy, hz likewise.
   T* populations_at_halo(int hx, int hy, int hz);
   const T* populations_at_halo(int hx, int hy, int hz) const;
+
+  // T11 MEM-timing diagnostic: a snapshot of populations_ taken right before
+  // stream() (i.e. post-collide + post-BC + post-ghost, the state the bounce-back
+  // actually operates on). The standard momentum-exchange method must read the
+  // OUTGOING (pre-stream) f_i on a boundary link, but after stream() that slot is
+  // overwritten by the bounced-back value, so the live populations_ no longer hold
+  // it. This snapshot lets a post-processor recompute the MEM force at the correct
+  // (pre-stream) timing. Allocated lazily; empty until take_post_collide_snapshot().
+  void take_post_collide_snapshot();
+  bool has_post_collide_snapshot() const { return !post_collide_snapshot_.empty(); }
+  const T* post_collide_populations_at_halo(int hx, int hy, int hz) const;
 
   // Fill ghost halo with periodic boundary values (for unit tests).
   // In production, GhostSchedule<BlockLattice> performs the equivalent MPI
@@ -283,9 +306,12 @@ class BlockLattice {
   int nx_, ny_, nz_, h_;
   std::vector<T> populations_;
   std::vector<T> stream_tmp_;
+  std::vector<T> post_collide_snapshot_;
   std::vector<BcKind> bc_kinds_;
   const BouzidiLinkData* bouzidi_ = nullptr;
   OctantId octant_id_ = 0;
+  std::array<double, 3> phys_origin_{0.0, 0.0, 0.0};
+  double phys_cell_width_ = 1.0;
   OverlapPaddingCollideMode overlap_padding_collide_mode_ =
       OverlapPaddingCollideMode::kNoDynamics;
   YminYmaxPaddingOutOfHaloMode ymin_ymax_out_of_halo_mode_ =

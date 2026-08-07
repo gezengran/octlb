@@ -43,11 +43,23 @@ struct DomainBcSpec {
 
 // Per-cell prescribed velocity for a BC spec: the inlet_field's value at
 // (ix, iy, iz, t) when set, otherwise the constant u_wall. Single source for
-// both the legacy Zou-He and the InterpolatedVelocity BC paths.
+// both the legacy Zou-He and the InterpolatedVelocity BC paths. When the field
+// is_physical() and a block phys_origin is supplied, evaluate from the cell's
+// domain position so a physical-coordinate profile (e.g. channel Poiseuille)
+// is correct on a channel patch carved into a larger face.
 inline void PrescribedVelocity(const DomainBcSpec& spec, int ix, int iy,
-                               int iz, double t, double u[3]) {
+                               int iz, double t, double u[3],
+                               const double origin[3] = nullptr,
+                               double cell_width = 0.0) {
   if (spec.inlet_field) {
-    spec.inlet_field->velocity(ix, iy, iz, t, u);
+    if (origin != nullptr && spec.inlet_field->is_physical()) {
+      const double px = origin[0] + (ix + 0.5) * cell_width;
+      const double py = origin[1] + (iy + 0.5) * cell_width;
+      const double pz = origin[2] + (iz + 0.5) * cell_width;
+      spec.inlet_field->velocity_phys(px, py, pz, t, u);
+    } else {
+      spec.inlet_field->velocity(ix, iy, iz, t, u);
+    }
     return;
   }
   for (int d = 0; d < 3; ++d) {

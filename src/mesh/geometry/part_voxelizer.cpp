@@ -113,18 +113,30 @@ MaterialField voxelize_part(const OctreeForest& forest, const GeometryPart& part
   return field;
 }
 
-void merge_material_field(MaterialField* base, const MaterialField& overlay) {
+void merge_material_field(MaterialField* base, const MaterialField& overlay,
+                          GeometryPartRole role) {
   if (base->num_octants() != overlay.num_octants() ||
       base->nx() != overlay.nx() || base->ny() != overlay.ny() ||
       base->nz() != overlay.nz()) {
     throw GeometryBuildError("MaterialField merge size mismatch");
   }
+  // kInternalChannel defines the fluid domain -> unconditional overwrite (its
+  // lumen kFluid carves fluid out of a lower-priority obstacle; its wall
+  // kSolid/surface kBoundary likewise take precedence). kExternalObstacle only
+  // ADDS itself -> claim-based: overwrite only where it classifies kSolid/kBoundary
+  // (its own interior/surface), never where it says kFluid ("outside my obstacle"),
+  // so a lower-priority channel's wall/earth survives underneath. See the header
+  // doc for the full rationale.
+  const bool claim_based = (role == GeometryPartRole::kExternalObstacle);
   for (label id = 0; id < base->num_octants(); ++id) {
     for (int k = 0; k < base->nz(); ++k) {
       for (int j = 0; j < base->ny(); ++j) {
         for (int i = 0; i < base->nx(); ++i) {
-          // Parts are merged in ascending priority order; later parts win.
-          base->set(id, i, j, k, overlay.at(id, i, j, k));
+          const MaterialKind ov = overlay.at(id, i, j, k);
+          if (claim_based && ov == MaterialKind::kFluid) {
+            continue;  // obstacle "outside" -- defer to the lower-priority part
+          }
+          base->set(id, i, j, k, ov);
         }
       }
     }

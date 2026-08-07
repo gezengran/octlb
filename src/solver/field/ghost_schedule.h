@@ -243,8 +243,14 @@ class GhostSchedule {
       if (e.is_local) {
         continue;
       }
-      blocks_[e.local_id].unpack_edge(OppositeFace(e.d1), OppositeFace(e.d2),
-                                      edge_recv_buf(i), e.elem_count);
+      // Cross-rank (Stage B): unpack into the LOCAL block's (d1,d2) edge halo --
+      // the edge adjacent to the remote diagonal partner. FacePairList records
+      // d1/d2 from the local side (EdgeCallback uses sides[li].f0/f1), so the
+      // halo to fill is the SAME (d1,d2) edge we packed, NOT its opposite. (Stage
+      // A uses OppositeFace because it unpacks into the REMOTE block; mirroring
+      // the cross-rank face exchange which uses unpack_face(e.dir), same dir.)
+      blocks_[e.local_id].unpack_edge(e.d1, e.d2, edge_recv_buf(i),
+                                      e.elem_count);
     }
   }
 

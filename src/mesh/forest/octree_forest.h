@@ -27,6 +27,13 @@ class OctreeForest {
   OctreeForest& operator=(OctreeForest&&) noexcept;
 
   void refine(std::function<bool(OctantId)> criterion, int max_level);
+  /** Recursive refine with a bounds+level criterion. The callback receives the
+   *  octant's domain bounding box and level directly from the p4est quadrant, so
+   *  it is safe to evaluate DURING recursive refine (the OctantId-based overload
+   *  cannot be -- a child inherits the parent's local id mid-refine, so only a
+   *  1-octant-wide chain cascades). Use this for any region/box refinement. */
+  void refine(std::function<bool(const BoundingBox&, int)> criterion,
+              int max_level);
   void balance();
   /** Uniform partition when \a weight_fn is null; else \c p8est_partition_ext. */
   void partition(std::function<int(OctantId)> weight_fn = nullptr);

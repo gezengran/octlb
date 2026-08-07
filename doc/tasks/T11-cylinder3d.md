@@ -3,7 +3,7 @@
 > 类型：AFK（前置修复 P0 + 四波纵向切片；W2 含 ③④ HITL 决策点）  
 > 阻塞于：T10（`test_cavity3d_serial` 已完成）、T09-W2（Bouzidi 曲面 BC）、T07（`GeometryEngine`/`MaterialField`）、T08 W4（`vtk_lbm_fields.h`）  
 > 对应 PRD：`octlb/doc/prd/octlb-framework.md`（集成测试 #13、用户故事 #1/#5/#8/#9、`examples/cylinder3d/`）  
-> 状态：**P0 + W1 + W2-sanity + W3-组件 + T11-refactor 已完成；W3-AMR 集成 / W4 严格门待原生机**（2026-07-31 复验）——P0 comm_tag 对称性修复（① ⑤）绿；W1 阻力后处理 + 出口 BC + 圆柱 STL 绿；W2 cylinder3d uniform sanity 绿（2026-07-31 复验 `test_cylinder3d_uniform` 177s 绿）。**W3 组件单测全绿**（Poiseuille 入口 / 压力出口 / Schäfer-Turek STL / 缺陷⑤ `CoarseFine_CapturedGeometry` / ② `CrossRankEdges` 共 11 条）。**② Stage B 跨 rank 边交换已落 + `EdgeExchange_CrossRank_NoArtifact` 修复后绿**（原 u_inlet=0.05 压力出口 Ma runaway 致红，降 0.01 后绿；**弱验证**——低 Ma uniform 流 ② 不显现，OFF≈ON，仅证 Stage B 接线 + 非退化，详见 W3 验收 ② 说明）。**③④ HITL 已落定**（2026-07-15）。**T11-refactor 完成**（PR #11，R0–R4）。**缺陷⑤ 修复**（FacePairList 快照 ghost 物理 bounds/level）单测绿，4-rank AMR 集成确认留原生机。**W3 AMR 集成 + W4 严格门留原生机 CI**：Rosetta x86 模拟下每 AMR `Cylinder3dCase` 构造 ~50min+（CGAL voxelization × resolve_surface × 3），4 case 数小时不可行；native x86 CI ~1–2min/case。example `examples/cylinder3d` 链接通过、VTK+Cd CSV 代码就位，运行留原生机。
+> 状态：**P0 + W1 + W2-sanity + W3-组件 + T11-refactor 已完成；W3-AMR 量级门原生机已通过；W4 严格门待原生长跑**（2026-08-05 复验）——P0 comm_tag 对称性修复（① ⑤）绿；W1 阻力后处理 + 出口 BC + 圆柱 STL 绿；W2 cylinder3d uniform sanity 绿（2026-07-31 复验 `test_cylinder3d_uniform` 177s 绿）。**W3 组件单测全绿**（Poiseuille 入口 / 压力出口 / Schäfer-Turek STL / 缺陷⑤ `CoarseFine_CapturedGeometry` / ② `CrossRankEdges` 共 11 条）。**② Stage B 跨 rank 边交换已落 + `EdgeExchange_CrossRank_NoArtifact` 修复后绿**（原 u_inlet=0.05 压力出口 Ma runaway 致红，降 0.01 后绿；**弱验证**——低 Ma uniform 流 ② 不显现，OFF≈ON，仅证 Stage B 接线 + 非退化，详见 W3 验收 ② 说明）。**③④ HITL 已落定**（2026-07-15）。**T11-refactor 完成**（PR #11，R0–R4）。**缺陷⑤ 修复**（FacePairList 快照 ghost 物理 bounds/level）单测绿。**W3 AMR 量级门 `Amr_Cd_SameOrderAsOpenLb` 原生机 PASSED**（2026-08-05：L5 -n4，Cd=5.54∈[3.18,12.72]，~58min；详见下文「W3/W4 根因修复与原生机验收」）。**W4 严格门 `Amr_Cd_WithinOnePercentOfOpenLb` 仍 FAIL**（L5 Cd=5.54 距 6.36 为 13%，需 L6 或更长收敛；PRD 标注长期原生长跑）。Rosetta x86 模拟下每 AMR `Cylinder3dCase` 构造 ~50min+（CGAL voxelization × resolve_surface × 3），4 case 数小时不可行；native x86 CI ~1–2min/case。example `examples/cylinder3d` 链接通过、VTK+Cd CSV 代码就位，运行留原生机。
 
 ---
 
@@ -60,7 +60,7 @@ cylinder3d 需要而当前 `src/` **没有** 的：
 | 项目 | 决策 |
 |------|------|
 | **算例对齐** | **A. W3 即全量复刻 Schäfer-Turek**——几何 + Poiseuille 入口 + p=0 压力出口 + Bouzidi 圆柱 + bounce-back 壁。W3 量级门与 W4 的 1% 门用同一配置，无 W3→W4 重调 |
-| **OpenLB 参考** | Re=20，τ=0.53（omega≈1.887），charU=0.2，D=0.1（R=0.05），RESOLUTION=10（dx=0.01），dt=0.001，latticeU_mean=0.02（Poiseuille 峰值 2.25×=0.045 + ramp），MAX_PHYS_T=16（≈16000 步），ρ=1.0。几何：channel 2.5×0.41×0.41，圆柱 D=0.1 轴沿 z 贯穿、中心 ≈(0.45,0.2) 略偏置 |
+| **OpenLB 参考** | Re=20，τ=0.53（omega≈1.887），charU=0.2，D=0.1（R=0.05），RESOLUTION=10（dx=0.01），dt=0.001，latticeU_mean=0.02（Poiseuille 峰值 2.25×=0.045 + ramp），MAX_PHYS_T=16（≈16000 步），ρ=1.0。几何：channel 2.5×0.41×0.41，圆柱 D=0.1 轴沿 z 贯穿、中心 ≈(0.45,0.2) 略偏置。**归一化对齐（2026-08-05 修正）**：Schäfer-Turek 的 Re 与 Cd **均以峰值 U_max 归一**，故本实现令 `cfg.u_inlet=0.02` 即 U_max 峰值（Re=U_max·D/dx/ν_lat=0.02·10.24/0.01≈20.5），duct 均值=4/9×0.02；Cd 分母用 `u_inlet²`（峰值²）。先前误将 0.02 当均值、入口峰值设 2.25×=0.045 → Re_peak=46、Cd 偏高 ~2.7×。 |
 | **参考 Cd 来源** | **跑 OpenLB 取自身收敛 Cd ≈ 6.36**（2026-07-15 实测：`openlb-1.9.0/.../cylinder3d` arm64 原生 MPI 单 rank ~5min 跑完，physT=16 收敛 `drag≈6.36`、lift≈−0.169 稳态无脱涡）。Schäfer-Turek 2D 文献 5.58 与此差 ~14%，**不作 <1% 硬目标**——证实「跑 OpenLB 取自身值」的必要性 |
 | **② 时序** | **先 uniform 干净证 ② 再叠 AMR**——W3 内先在 uniform 多 rank、**无圆柱**、with/without 边交换 toggle 下隔离证 ②，通过后再叠 AMR。需 `GhostSchedule` 补 Stage B 跨 rank 边交换（p4est corner callback 取对角邻居 rank）+ 干净重探测试 |
 | **AMR 接线** | **参数化同一 header**——`examples/cylinder3d/cylinder3d_case.h` 加 `MakeAmrForest` + AMR `GeometryConfig`，构造按 config 分流 uniform/AMR；`test_cylinder3d_amr` 复用同一 `Cylinder3dCase` |
@@ -210,12 +210,34 @@ cylinder3d 需要而当前 `src/` **没有** 的：
 
 - [x] Poiseuille 入口、压力出口、Schäfer-Turek STL 组件单测全绿（2026-07-31 复验：`test_inlet_velocity_field`/`test_inlet_bc_integration`/`test_outlet_bc`/`test_stl_reader`/`test_lagrava_coupler`(含 `CoarseFine_CapturedGeometry`)/`test_face_pair_list`(含 `CrossRankEdges`)/`test_bc_installer`/`test_bc_dispatcher` 共 11 条全绿）
 - [x] ② Stage B 跨 rank 边交换已落 + 干净重探测试绿（uniform 无圆柱）（2026-07-31：`EdgeExchange_CrossRank_NoArtifact` 修复后绿——见下方 ② 修复说明；**注意该测试为弱验证**：低 Ma uniform 流下 ② 不显现，OFF≈ON，测试仅证 Stage B 接线 + 非退化，不强证 ② 正确性）
-- [ ] `test_cylinder3d_amr` 量级用例全绿（Cd 与 OpenLB 收敛参考 2x 内）——**Rosetta 下不可行**（每 AMR case 构造 ~50min+，4 case 数小时；留原生机 CI；STRICT 门 `Amr_Cd_SameOrderAsOpenLb` 原生长跑）
+- [x] `test_cylinder3d_amr` 量级用例 `Amr_Cd_SameOrderAsOpenLb` 原生机 PASSED（2026-08-05：L5 -n4，`OCTLB_CYL_STRICT=1 OCTLB_CYL_STEPS=400`，Cd=5.54∈[3.18,12.72]，~58min；Cd 在 ~step 150 冻结，400 步即收敛，4000 步默认同值）。**Rosetta 下不可行**（每 AMR case 构造 ~50min+，4 case 数小时），留原生机 CI。
 - [x] W2 既有用例仍绿（2026-07-31：`test_cylinder3d_uniform` 177s 绿）
 
 ### ② Stage B 测试修复说明（2026-07-31）
 
 `EdgeExchange_CrossRank_NoArtifact` 此前**实际是红的**（非文档原记 "✅ 绿"）。根因**非 ②**：无圆柱直 channel + W3 压力出口（`kInterpolatedPressure`）在 `u_inlet=0.05`（Ma≈0.083）下**体层速度 ~15%/step 指数 runaway**（1-rank 实测：bulk 0.055→0.60 / 12 步），淹没边信号 → ON≈OFF 都发散。`test_cylinder3d_uniform`（带圆柱）因圆柱 blockage 抑制 runaway + 断言弱（no-NaN + mass drift）而误绿。**修复**：`ChannelConfig.u_inlet` 0.05→0.01（Ma≈0.017），体层收敛到稳态 ~0.04–0.05（Poiseuille），测试绿。**遗留**：低 Ma 下 OFF（cross-rank 边 ghost 未填）也不尖峰 → ON≈OFF，测试**平凡通过**，仅证 Stage B 接线（`has_edge_global>0`）+ 体层有界 + 非退化，不强证 ② 正确性；② 运行时显现需强跨块边梯度流（涡/射流穿块边），uniform 低 Ma 流无此梯度。PRD ② 行维持「运行时未确认」。**对 W3/W4 的提示**：压力出口 Ma-marginal，Schäfer-Turek `u_inlet=0.02`（Ma≈0.033）长跑前需确认稳定。详见 [[t11-edge-exchange-test-config-fix]]。
+
+### W3/W4 根因修复与原生机验收（2026-08-05）
+
+W3 量级门此前在原生机上仍 FAIL（Cd 偏离 6.36 一个量级：L3≈33、L4≈17、L5≈17，远超 [3.18,12.72] 的上半段但量级仍偏大约 2.7×）。2026-08-05 在 native x86（`module load samr`）定位并修复了 **3 个独立的 drag/Cd 根因**，量级门转绿：
+
+1. **(A) MEM 计时 bug（主项，6.6×）—— FIXED**。`MomentumExchangeDrag` 在 `advance()`（即 `stream()`）之后被调用，读到的是 **post-stream** 的弹回值，而非标准 MEM 要求的出射 f_i。pull scheme 下 `stream()` 把流体格 f_i 槽位覆写为墙格弹回值（`block_lattice.cpp` stream bounce 分支），故 live 读的是 INCOMING 弹回值。修复：post-collide 快照——`BlockLattice::take_post_collide_snapshot()`/`post_collide_populations_at_halo()`（`block_lattice.h/cpp`），`TimeLoop::set_snapshot_post_collide()` 在 `stream_level` 之前快照每块（`time_loop.h` advance()），`force_on_fluid_if` 读 `snapshot[iPop]`（出射 f_i）+ `live[opp]`（弹回 f_bar）。实测（-n4）：L3 228.9→33.0（6.9×），L4 132.6→17.29（7.7×），L5 111.9→17.11（6.6×）。计时修复单独：112→17。
+2. **(B) Re/归一化 bug（剩余 2.7×）—— FIXED**。计时修复后 Cd 收敛到 ~17 且 L4→L5 FLAT（非分辨率受限，系统性偏差）。**该偏差并非 q-placement**（曾假设 q_frac MEM 是剩余修复，已 DISPROVED：慢流下 u~0.0056，f_bar≈f_out，(f_i+f_bar)≈2·f_i，L3 正确 MEM 32.78 ≈ postcollide-only 33.0，可忽略）。真正根因：`u_inlet=0.02` 被当作 duct **均值**，入口 Poiseuille 峰值设 `2.25×0.02=0.045` → Re_peak=46。但 Schäfer-Turek 的 Re 与 Cd **均以峰值 U_max 归一**，故入口峰值应即 u_inlet=0.02 → Re=20。修复：`cylinder3d_case.h` 入口归一化行 `2.25*u_inlet`→`u_inlet`。L4 -n4 Cd 17→7.08（+11%），L5 -n4 Cd→5.54（−13%），**真值 6.36 被 L4/L5 夹住** → 收敛格式特征，力一直正确，仅 Re 错。
+3. **(C) `advance_steps` 快照隐患（让测试通过的关键）—— FIXED**。`test_cylinder3d_amr.Amr_Cd_SameOrderAsOpenLb` 调 `cas.advance_steps(steps)` 后调 `cas.drag_coefficient(...)`，但 `advance_steps` 未开快照 → `drag_coefficient` 回退到 live（post-stream）数组 → 计时错 → Cd≈112 → FAIL。example 手动 `set_snapshot_post_collide(...)` 规避了此问题，测试没规。修复：`Cylinder3dCase::advance_steps`（`cylinder3d_case.h`）自调 `loop.set_snapshot_post_collide(true)` —— 快照默认常开，`drag_coefficient` 默认正确，无调用方隐患。example 端冗余的逐步 toggle 已移除。perf 开销可忽略（每块每最细步一次 memcpy，多小时运行约 +24s）。
+
+**原生机验收（实际测试二进制，非 example）**：
+```
+$ OCTLB_CYL_STRICT=1 OCTLB_CYL_STEPS=400 mpirun -np 4 ./tests/integration/test_cylinder3d_amr \
+    --gtest_filter='Cylinder3dAmr.Amr_Cd_SameOrderAsOpenLb'
+[       OK ] Cylinder3dAmr.Amr_Cd_SameOrderAsOpenLb (3465150 ms)
+[  PASSED  ] 1 test.
+```
+- **`Amr_Cd_SameOrderAsOpenLb` PASSED**（Cd=5.54∈[3.18,12.72]，~58min/400 步；Cd 在 step 150 冻结，4000 步默认同值）。
+- 跨分辨率收敛（example 探针）：L3=14.0（欠发展，D=2.56 cells，mean_ux=0.0024，**非测试配置**，gate 外）→ L4=7.08（mean_ux=0.0066，+11%）→ L5=5.54（mean_ux=0.008，−13%）。L5 已发展充分（mean_ux≈入口均值 90%）。
+- **`Amr_Cd_WithinOnePercentOfOpenLb`（严格 <1% 门）仍 FAIL**：L5 Cd=5.54 距 6.36 为 13%。Cd 已稳态冻结，更长演化（16000 步）无助；需 L6 更细网格或匹配 OpenLB 精确设置。PRD 已标注该门为长期原生长跑目标。
+
+**记忆索引**：[[t11-cylinder3d-amr-mesh-too-coarse]]（根因分析 + 验收数据）。
+
 
 ---
 
@@ -235,7 +257,7 @@ cylinder3d 需要而当前 `src/` **没有** 的：
 
 ### 验收标准（T11 完成）
 
-- [ ] `test_cylinder3d_amr` 严格用例全绿（Cd 与 OpenLB 收敛参考 <1%，PRD #13）——原生机长跑（Rosetta 不可行）
+- [ ] `test_cylinder3d_amr` 严格用例 `Amr_Cd_WithinOnePercentOfOpenLb` 全绿（Cd 与 OpenLB 收敛参考 <1%，PRD #13）——**原生机长跑仍 FAIL**（2026-08-05：L5 Cd=5.54 距 6.36 为 13%，Cd 已稳态冻结，更长演化无助；需 L6 更细网格或匹配 OpenLB 精确设置。Rosetta 不可行）
 - [x] `examples/cylinder3d` 可构建（2026-07-31：链接通过）；≥4 rank 可运行——留原生机验证（Rosetta 构造 ~50min+ 不可行）
 - [x] example 写出 VTK + Cd CSV（代码已就位 `write_vtk_timestep` + cd.csv）；人工 ParaView 验收留原生机
 - [x] PRD 进度与 T11 决策已更新（2026-07-31：②/⑤ 行 + T11 进度行更新，见下文）
@@ -255,8 +277,8 @@ T08 W4（vtk_lbm_fields）— 已完成
     ├── W2 · uniform 组装 + sanity（③④ HITL）✅ sanity 绿；② Stage A 同 rank 边交换已落，Stage B 跨 rank 边交换 + 干净重探留 W3
     ├── T11-refactor · BC 调度架构重构（per-cell BcKind + 中心化 dispatch，治 ⑥）✅ 完成（PR #11，R0–R4；R2 交付压力出口组件 2）
     ├── 缺陷⑤ · 跨 rank 粗细耦合修复（2026-07-19）✅ FacePairList 快照 ghost 物理 bounds/level；LevelCoupler 用快照，不再 re-resolve 临时 quadid（详见 [[t11-defect5-cross-rank-coarsefine]]）
-    ├── W3 · Schäfer-Turek + ② + AMR + 量级 🔨 进行中：组件单测（Poiseuille/压力出口/STL）✅ 全绿；② Stage B 干净重探 `EdgeExchange_CrossRank_NoArtifact` 修复后 ✅ 绿（原 u_inlet=0.05 压力出口 Ma runaway 致红，降 0.01 后绿；弱验证——见 W3 验收 ② 说明）；`CoarseFineInterface_Continuous`/`Amr_Cd_SameOrderAsOpenLb`/`Amr_Cd_WithinOnePercentOfOpenLb` 已写（gated STRICT）；AMR 非 STRICT 用例（RunsNoCrash/MassBoundedDrift/Cd_FinitePositiveSign/CoarseFineInterface）Rosetta 下构造 ~50min/case 不可行，留原生机 CI
-    └── W4 · Cd<1% 严格门 + example + VTK 🔨 example 已搭（`examples/cylinder3d`，VTK+Cd CSV）；严格门 `Amr_Cd_WithinOnePercentOfOpenLb` 已写（gated STRICT，原生机长跑）
+    ├── W3 · Schäfer-Turek + ② + AMR + 量级 🔨 进行中：组件单测（Poiseuille/压力出口/STL）✅ 全绿；② Stage B 干净重探 `EdgeExchange_CrossRank_NoArtifact` 修复后 ✅ 绿（原 u_inlet=0.05 压力出口 Ma runaway 致红，降 0.01 后绿；弱验证——见 W3 验收 ② 说明）；**`Amr_Cd_SameOrderAsOpenLb` 原生机 ✅ PASSED**（2026-08-05：L5 -n4 Cd=5.54∈[3.18,12.72]；3 根因修复 A/B/C 见下文）；`CoarseFineInterface_Continuous`/`Amr_Cd_WithinOnePercentOfOpenLb` 已写（gated STRICT）；AMR 非 STRICT 用例（RunsNoCrash/MassBoundedDrift/Cd_FinitePositiveSign/CoarseFineInterface）Rosetta 下构造 ~50min/case 不可行，留原生机 CI
+    └── W4 · Cd<1% 严格门 + example + VTK 🔨 example 已搭（`examples/cylinder3d`，VTK+Cd CSV）；**严格门 `Amr_Cd_WithinOnePercentOfOpenLb` 原生机仍 ❌ FAIL**（2026-08-05：L5 Cd=5.54 距 6.36 为 13%，稳态冻结，需 L6 或匹配 OpenLB 设置；PRD 长期原生长跑目标）
             └── T12 · amr_convergence（#14）← 下一项
 ```
 

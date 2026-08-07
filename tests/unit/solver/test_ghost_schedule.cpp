@@ -475,10 +475,15 @@ TEST(GhostSchedule, TwoRank_BlockLattice_FaceValuesMatch) {
 
 // ② W3 Stage B: GhostSchedule fills cross-rank edge-diagonal ghosts via MPI.
 // Two ranks, uniform forest; the cross-rank edge with the smallest symmetric
-// comm_tag is the same physical edge on both ranks. After exchange(), the
-// local block's edge ghost at (Opp(d1), Opp(d2)) must equal the peer's
-// pack_edge(peer_d1, peer_d2) -- the peer's local edge faces are the opposites
-// of ours, so it packs (Opp(d1), Opp(d2)) and we unpack into (Opp(d1), Opp(d2)).
+// comm_tag is the same physical edge on both ranks. FacePairList records d1/d2
+// from the LOCAL side (EdgeCallback uses sides[li].f0/f1), so the local block's
+// edge at (d1, d2) is the one facing the remote diagonal partner, and its ghost
+// at (d1, d2) is the halo that must receive the partner's data. After exchange()
+// the local block's edge_ghost(d1, d2) must equal the peer's pack_edge(peer_d1,
+// peer_d2) -- the peer's d1/d2 are the opposites of ours, so it packs its own
+// (Opp(d1), Opp(d2)) edge (facing us) and we unpack into our SAME (d1, d2) ghost.
+// (This mirrors the cross-rank face exchange, which unpacks into unpack_face(dir)
+// -- the same dir, not the opposite.)
 TEST(GhostSchedule, EdgeExchange_CrossRank_FillsDiagonalGhost) {
   int rank = 0;
   int size = 0;
@@ -512,15 +517,15 @@ TEST(GhostSchedule, EdgeExchange_CrossRank_FillsDiagonalGhost) {
                                      kNz);
   schedule.exchange();
 
-  const FaceDir od1 = OppositeFace(e->d1);
-  const FaceDir od2 = OppositeFace(e->d2);
   const int count =
       DummyBlock::edge_buffer_count(kNx, kNy, kNz, e->d1, e->d2);
-  const std::vector<int> got = blocks[e->local_id].edge_ghost(od1, od2);
+  // The ghost at the SAME (d1, d2) edge -- the halo facing the remote partner.
+  const std::vector<int> got = blocks[e->local_id].edge_ghost(e->d1, e->d2);
   ASSERT_EQ(got.size(), static_cast<std::size_t>(count))
       << "cross-rank edge ghost not filled (Stage B no-op)";
 
-  // The peer packs its local edge (its faces are Opp(d1), Opp(d2)) and sends.
+  // The peer packs its own local (d1, d2) edge -- its faces are the opposites of
+  // ours, so that is the edge facing us; that is exactly what fills our (d1,d2).
   std::vector<int> peer_pack(static_cast<std::size_t>(count));
   if (rank == 0) {
     MPI_Recv(peer_pack.data(), count, MPI_INT, 1, 9300, MPI_COMM_WORLD,

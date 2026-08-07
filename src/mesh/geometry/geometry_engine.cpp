@@ -35,7 +35,7 @@ MaterialField GeometryEngine::build(OctreeForest& forest,
                        config.cell_width, config.cell_width);
   for (const GeometryPart& part : ordered) {
     MaterialField part_field = voxelize_part(forest, part, config);
-    merge_material_field(&merged, part_field);
+    merge_material_field(&merged, part_field, part.role);
   }
   return merged;
 }

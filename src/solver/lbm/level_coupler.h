@@ -52,6 +52,11 @@ class LevelCoupler {
   };
 
   static constexpr int kMacroDoubles = 1 + 3 + LatticeD3Q19::kQ;
+  // Restrict payload (fine->coarse): rho, u[3], fine f_neq[Q], neighbour
+  // f_neq sum[Q], neighbour count (as double). The fine owner computes the
+  // full restricted macro locally (neighbours are in its own fine block) and
+  // ships it; the coarse owner writes. kRestrictDoubles = 1 + 3 + 2*Q + 1.
+  static constexpr int kRestrictDoubles = 1 + 3 + 2 * LatticeD3Q19::kQ + 1;
 
   void PackMacro(const MacroState& m, double* buf) const;
   void UnpackMacro(const double* buf, MacroState* m) const;
@@ -66,6 +71,11 @@ class LevelCoupler {
 
   void ExchangeCoarseMacros(int coarse_level, bool include_prev);
   void ApplyProlongation(std::size_t begin, std::size_t end, bool half_time);
+  // Cross-rank restriction: the fine owner packs the restricted macro (fine
+  // cell + in-block neighbour f_neq sum + count) and sends it to the coarse
+  // owner, who writes it. Local-local pairs are handled directly in restrict().
+  void ExchangeFineForRestrict(int fine_level);
+  void ApplyRestrictionCrossRank(int fine_level);
 
   std::size_t LevelRangeBegin(int coarse_level) const;
   std::size_t LevelRangeEnd(int coarse_level) const;
@@ -85,6 +95,11 @@ class LevelCoupler {
   std::vector<MacroState> curr_macro_;
   std::vector<MacroState> recv_macro_;
   std::vector<MacroState> recv_prev_macro_;
+  // Cross-rank restrict payloads, indexed by plan index (one per coupling
+  // point). Filled by the coarse owner from the fine owner's message.
+  std::vector<double> recv_restrict_;
+  std::vector<double> restrict_send_buf_;
+  std::vector<double> restrict_recv_buf_;
 
   std::vector<std::size_t> level_begin_;
   std::vector<std::size_t> level_end_;
